@@ -528,13 +528,13 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
           )}
             Follow-up Questions per Student
           </label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {[0, 1, 2].map(num => (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {[0, 1, 2, 3, 4, 5].map(num => (
               <button
                 key={num}
                 onClick={() => setLocalSettings(prev => ({ ...prev, maxFollowUpQuestions: num }))}
                 style={{
-                  flex: 1,
+                  flex: '1 1 60px',
                   padding: '10px 16px',
                   borderRadius: '8px',
                   border: (localSettings.maxFollowUpQuestions ?? 2) === num

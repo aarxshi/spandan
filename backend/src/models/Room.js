@@ -42,6 +42,10 @@ const roomSchema = new mongoose.Schema({
     questionsPerSegment: { type: Number, default: 2 },
     difficulty: { type: String, default: 'medium' },
     questionProvider: { type: String, default: 'minimax' },
+    // Max follow-up (remediation) questions a student can get for wrong answers, once the room
+    // ends. 0 turns the feature off. Must be declared here or mongoose's default strict mode
+    // silently drops it on save, leaving it stuck at its default no matter what's picked in the UI.
+    maxFollowUpQuestions: { type: Number, default: 2, min: 0, max: 5 },
     questionTypeMix: {
       MCQ: { type: Number, default: 50 },
       TF: { type: Number, default: 30 },

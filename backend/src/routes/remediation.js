@@ -17,7 +17,11 @@ router.post('/generate', authorize('student'), async (req, res) => {
     const Room = (await import('../models/Room.js')).default
     const RoomMember = (await import('../models/RoomMember.js')).default
 
-    const { roomId, maxQuestions = 2 } = req.body
+    const { roomId, maxQuestions: rawMaxQuestions = 2 } = req.body
+    // Clamp server-side — maxQuestions comes straight from the client, and the teacher-facing
+    // setting only ever offers 0-5, so don't trust a request asking for more (each one is an LLM
+    // call in the worst case).
+    const maxQuestions = Math.max(0, Math.min(5, Number(rawMaxQuestions) || 0))
     const studentId = req.user._id
 
     if (!roomId) return res.status(400).json({ error: 'roomId is required' })
