@@ -484,9 +484,15 @@ router.get('/stats/room/:roomId', async (req, res) => {
         type: q.type,
         totalResponses: totalByQuestion.get(q._id.toString()) || 0,
         correctCount,
-        answerCounts
+        answerCounts,
+        isRemediation: !!q.isRemediation
       }
     })
+
+    // Remediation questions are personalized/generated after the fact — exclude them from the
+    // headline count so this matches what the teacher actually configured (see resultsSnapshot.js,
+    // which applies the same filter on the cached/ended-room path).
+    const mainQuestionCount = questions.filter((q) => !q.isRemediation).length
 
     res.json({
       success: true,
@@ -494,7 +500,7 @@ router.get('/stats/room/:roomId', async (req, res) => {
         totalResponses,
         totalStudents: uniqueStudents.length,
         totalJoined,
-        totalQuestions: questions.length,
+        totalQuestions: mainQuestionCount,
         questionStats
       }
     })
@@ -624,6 +630,8 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
+        isRemediation: !!q.isRemediation,
+        parentQuestionId: q.parentQuestionId ? toIdString(q.parentQuestionId) : null,
         answered: !!studentResponse,
         // Tells the frontend to render this still-live question neutrally: marked answer in blue, or
         // a "missed" tag if unanswered — no correct/incorrect until it is revealed.

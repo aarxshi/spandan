@@ -404,7 +404,7 @@ async function generateWithMiniMax(prompt) {
       'Authorization': `Bearer ${config.minimaxApiKey}`
     },
     body: JSON.stringify({
-      model: 'MiniMax-M2.7',
+      model: 'minimax-m3',
       messages: [
         {
           role: 'user',
@@ -423,6 +423,15 @@ async function generateWithMiniMax(prompt) {
   }
 
   const data = await response.json()
+
+  // MiniMax's chatcompletion_v2 endpoint can return HTTP 200 even when the request itself failed
+  // (bad model name, invalid key, quota, etc.) — the real error lives in base_resp instead of
+  // choices. status_code 0 means success; anything else is an error with no choices to parse.
+  const baseResp = data.base_resp
+  if (baseResp && baseResp.status_code !== 0) {
+    throw new Error(`MiniMax API error: ${baseResp.status_code} - ${baseResp.status_msg || 'Unknown error'}`)
+  }
+
   const choice = data.choices?.[0]
   const content = choice?.message?.content || ''
   const reasoning = choice?.message?.reasoning_content || ''
@@ -432,10 +441,13 @@ async function generateWithMiniMax(prompt) {
   // The model normally returns the JSON answer in `content`. If `content` is empty (the reasoning
   // model occasionally puts everything in `reasoning_content`), fall back to reasoning so a
   // recoverable answer isn't lost. If BOTH are empty, log the full choice so it's diagnosable.
+  // JSON.stringify(undefined) returns undefined (not a string), so guard with a fallback before
+  // slicing or a genuinely empty `choice` throws here too.
   const text = content || reasoning
   if (!text) {
     console.error('[gen:minimax] EMPTY response (no content, no reasoning). finish=' + finish +
-      ' raw choice: ' + JSON.stringify(choice).slice(0, 1500))
+      ' raw choice: ' + (JSON.stringify(choice) ?? 'undefined').slice(0, 1500) +
+      ' raw data keys: ' + Object.keys(data).join(','))
   } else if (!content && reasoning) {
     console.warn(`[gen:minimax] content empty — falling back to reasoning_content (${reasoning.length} chars)`)
   }
@@ -504,7 +516,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-2.0-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-3.5-flash') {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -584,4 +596,249 @@ export async function generateQuestions(transcript, cfg) {
   }
 
   return questions
+}
+// Build prompt for remediation question generation
+export function buildRemediationPrompt(originalQuestion, correctAnswer, mostPickedWrongAnswer, wrongAnswerText, explanation) {
+  return `You are an expert educational assessment designer. A student answered a question incorrectly.
+
+ORIGINAL QUESTION: ${originalQuestion}
+CORRECT ANSWER: ${correctAnswer}
+MOST COMMON WRONG ANSWER: ${wrongAnswerText}
+EXPLANATION OF CORRECT ANSWER: ${explanation || 'Not provided'}
+
+The student chose the wrong answer, suggesting a specific misconception. Generate exactly ONE remediation MCQ question that:
+1. Tests the SAME concept from a DIFFERENT ANGLE — not a rephrasing of the original
+2. Is designed to CORRECT the specific misconception implied by choosing "${wrongAnswerText}"
+3. Makes the student APPLY or REASON about the concept, not just recall it
+4. Has 4 options with exactly ONE correct answer and 3 plausible distractors
+
+Do NOT reference the original question. Write it as a standalone question.
+
+OUTPUT FORMAT (respond ONLY with valid JSON):
+{
+  "questions": [
+    {
+      "type": "MCQ",
+      "question": "The remediation question text here?",
+      "options": [
+        { "text": "Option A", "isCorrect": true },
+        { "text": "Option B", "isCorrect": false },
+        { "text": "Option C", "isCorrect": false },
+        { "text": "Option D", "isCorrect": false }
+      ],
+      "explanation": "Brief explanation of why the correct answer is right and what misconception it targets"
+    }
+  ]
+}`
+}
+
+export async function generateRemediationQuestion(originalQuestion, correctAnswer, wrongAnswerText, explanation, provider = 'minimax') {
+  const prompt = buildRemediationPrompt(originalQuestion, correctAnswer, null, wrongAnswerText, explanation)
+
+  let responseText
+  switch (provider) {
+    case 'minimax':
+      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+      responseText = await generateWithMiniMax(prompt)
+      break
+    case 'openai':
+      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+      responseText = await generateWithOpenAI(prompt)
+      break
+    case 'anthropic':
+      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+      responseText = await generateWithAnthropic(prompt)
+      break
+    case 'google':
+      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      responseText = await generateWithGoogle(prompt)
+      break
+    default:
+      throw new Error(`Unknown provider: ${provider}`)
+  }
+
+  const parsed = parseQuestions(responseText, ['MCQ'])
+  if (!parsed || parsed.length === 0) throw new Error('Failed to parse remediation question')
+  return parsed[0]
+}
+
+// --- Race-safe remediation generation ---------------------------------------------------
+//
+// Problem: at room end, many students can hit /generate within the same second. Without
+// coordination, students who all see "no remediation question exists yet for this parent
+// question" each fire their own LLM call and each save their own copy — duplicate rows, wasted
+// LLM spend, and no guarantee everyone ends up seeing the same remediation question.
+//
+// Fix: use the DB as the lock. The unique partial index on (roomId, parentQuestionId) for
+// isRemediation:true documents (see models/Question.js) means only one caller can ever
+// successfully INSERT a placeholder doc for a given parent question. That caller "wins" and is
+// responsible for calling the LLM and filling the placeholder in. Everyone else's insert fails
+// with a duplicate-key error (11000) — they catch that, look up the doc the winner is
+// populating, and poll it briefly until it flips to 'ready' (or 'failed').
+//
+// Crash recovery: if the winning process dies (OOM, deploy, crash) between claiming the
+// placeholder and finishing the LLM call, the doc is stuck in 'pending' forever — nothing ever
+// flips it to 'failed', so the normal failed-doc reclaim path never kicks in, and every future
+// caller would just poll it to a timeout and silently fail. generationStartedAt (set whenever a
+// placeholder is claimed/reclaimed) lets us tell "someone is actively generating this" apart from
+// "the claimant died a while ago" — a 'pending' doc older than REMEDIATION_STALL_MS is treated as
+// abandoned and reclaimed the same way a 'failed' doc is.
+const REMEDIATION_POLL_INTERVAL_MS = 400
+const REMEDIATION_POLL_TIMEOUT_MS = 15000 // LLM calls are usually 3-5s; this covers slow ones with room to spare
+// Well past any single LLM call (including the poll timeout above) — a 'pending' doc still
+// unclaimed after this long almost certainly means its owning process died, not that it's slow.
+const REMEDIATION_STALL_MS = REMEDIATION_POLL_TIMEOUT_MS + 5000
+
+function isStalledPending(doc) {
+  if (!doc || doc.generationStatus !== 'pending') return false
+  const startedAt = doc.generationStartedAt ? new Date(doc.generationStartedAt).getTime() : 0
+  // No generationStartedAt at all means it predates this field — treat as stalled rather than
+  // waiting on it forever with no way to ever reclaim it.
+  return !startedAt || (Date.now() - startedAt > REMEDIATION_STALL_MS)
+}
+
+async function waitForRemediationReady(questionId, timeoutMs = REMEDIATION_POLL_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const doc = await Question.findById(questionId).lean()
+    if (!doc) return null
+    if (doc.generationStatus === 'ready') return doc
+    if (doc.generationStatus === 'failed') return null
+    await new Promise(r => setTimeout(r, REMEDIATION_POLL_INTERVAL_MS))
+  }
+  console.warn(`[remediation] Timed out waiting for question ${questionId} to finish generating`)
+  return null
+}
+
+// Class-wide "most commonly picked wrong option" for a parent question — used as LLM context so
+// the remediation question targets the actual misconception rather than just "got it wrong".
+// Shared by both the pre-generation path (question:ended) and the on-demand path (/generate).
+async function getMostPickedWrongOption(roomId, parentQuestion) {
+  const wrongResponsesForQ = await Response.find({
+    roomId,
+    questionId: parentQuestion._id,
+    isCorrect: false
+  }).lean()
+
+  if (wrongResponsesForQ.length === 0) return null
+
+  const optionCounts = {}
+  for (const r of wrongResponsesForQ) {
+    optionCounts[r.selectedOption] = (optionCounts[r.selectedOption] || 0) + 1
+  }
+  const mostPickedWrongIdx = Object.entries(optionCounts)
+    .sort((a, b) => b[1] - a[1])[0]?.[0]
+
+  const correctOption = parentQuestion.options.find(o => o.isCorrect)
+  const wrongOption = parentQuestion.options[mostPickedWrongIdx]
+  if (!correctOption || !wrongOption) return null
+
+  return { correctOption, wrongOption }
+}
+
+// Ensures a remediation question exists (or is being generated) for the given parent question,
+// and returns it once ready — calling the LLM only if THIS call is the one that wins the race to
+// create it. Returns null if there's nothing to remediate (no wrong answers yet), or generation
+// failed/timed out — callers should treat that as "no remediation question for this one" rather
+// than blow up, so one bad generation doesn't take down the rest of the batch.
+export async function ensureRemediationQuestion(roomId, parentQuestion, provider = 'minimax') {
+  // Fast path: already generated. This is the common case once pre-generation (triggered at
+  // question:ended, see index.js) has had time to run before the student reaches /generate.
+  const existing = await Question.findOne({
+    roomId,
+    isRemediation: true,
+    parentQuestionId: parentQuestion._id
+  }).lean()
+
+  if (existing) {
+    if (existing.generationStatus === 'ready') return existing
+    if (existing.generationStatus === 'pending' && !isStalledPending(existing)) {
+      return waitForRemediationReady(existing._id)
+    }
+    // 'failed', OR a 'pending' doc old enough that its claimant almost certainly crashed — fall
+    // through and try to reclaim it for a (re)try, below.
+  }
+
+  const wrongAnswerInfo = await getMostPickedWrongOption(roomId, parentQuestion)
+  if (!wrongAnswerInfo) return null
+  const { correctOption, wrongOption } = wrongAnswerInfo
+
+  let placeholder
+  if (existing && (existing.generationStatus === 'failed' || isStalledPending(existing))) {
+    // Reclaim a failed doc OR an abandoned pending doc for a retry. Atomic on _id + the exact
+    // status/timestamp we just read, so if several callers land here at once — or the original
+    // claimant is actually still alive and just slow, not dead — only one of them wins the
+    // reclaim; everyone else falls through to the null branch below and waits on the doc instead.
+    placeholder = await Question.findOneAndUpdate(
+      {
+        _id: existing._id,
+        $or: [
+          { generationStatus: 'failed' },
+          { generationStatus: 'pending', generationStartedAt: existing.generationStartedAt ?? null }
+        ]
+      },
+      { $set: { generationStatus: 'pending', generationStartedAt: new Date() } },
+      { new: true }
+    )
+    if (!placeholder) {
+      // Someone else reclaimed it (or the "dead" claimant actually finished) a moment before us —
+      // ride along with whatever's there now instead of retrying blind.
+      return waitForRemediationReady(existing._id)
+    }
+  } else {
+    try {
+      placeholder = await Question.create({
+        roomId,
+        type: 'MCQ',
+        question: '(generating…)',
+        options: [],
+        segmentIndex: parentQuestion.segmentIndex,
+        timeToAnswer: parentQuestion.timeToAnswer || 30,
+        points: Math.round((parentQuestion.points || 100) * 0.5), // half points for remediation
+        status: 'approved',
+        isRemediation: true,
+        parentQuestionId: parentQuestion._id,
+        createdBy: parentQuestion.createdBy,
+        generationStatus: 'pending',
+        generationStartedAt: new Date()
+      })
+    } catch (err) {
+      if (err.code === 11000) {
+        // Someone else won the insert race a moment ago — wait on their doc instead of retrying.
+        const winner = await Question.findOne({
+          roomId, isRemediation: true, parentQuestionId: parentQuestion._id
+        }).lean()
+        if (!winner) return null
+        // The doc that won the insert race can itself be an abandoned claim (its creator crashed
+        // right after inserting it) — recurse once so it gets reclaimed instead of every future
+        // caller polling it to a timeout forever. The recursive call re-reads it fresh, so this
+        // terminates as soon as it's reclaimed (generationStartedAt resets to "now").
+        if (isStalledPending(winner)) return ensureRemediationQuestion(roomId, parentQuestion, provider)
+        return waitForRemediationReady(winner._id)
+      }
+      throw err
+    }
+  }
+
+  // We won the race (or the retry) — we're the one who actually calls the LLM.
+  try {
+    const generated = await generateRemediationQuestion(
+      parentQuestion.question,
+      correctOption.text,
+      wrongOption.text,
+      parentQuestion.explanation,
+      provider
+    )
+    placeholder.question = generated.question
+    placeholder.options = generated.options
+    placeholder.explanation = generated.explanation || ''
+    placeholder.generationStatus = 'ready'
+    await placeholder.save()
+    return placeholder.toObject()
+  } catch (err) {
+    console.error('[remediation] Failed to generate for question:', parentQuestion._id, err.message)
+    placeholder.generationStatus = 'failed'
+    await placeholder.save().catch(() => {})
+    return null
+  }
 }

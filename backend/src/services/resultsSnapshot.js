@@ -88,6 +88,9 @@ export async function buildSnapshot(roomId) {
   }
 
   // Approved questions, newest-first — the exact set + order the per-student endpoint renders.
+  // Remediation questions ARE included here (a student's remediation Q&A should still show up in
+  // their results review) but each carries isRemediation/parentQuestionId so the frontend can
+  // split them into their own section instead of mixing them into the main numbered quiz list.
   const approved = allQuestions
     .filter((q) => q.status === 'approved')
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -107,6 +110,8 @@ export async function buildSnapshot(roomId) {
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
+        isRemediation: !!q.isRemediation,
+        parentQuestionId: q.parentQuestionId ? toIdStr(q.parentQuestionId) : null,
         answered: !!resp,
         ...(resp && {
           selectedOption: resp.selectedOption,
@@ -121,7 +126,9 @@ export async function buildSnapshot(roomId) {
   }
 
   // Per-question stats over ALL questions (matches the current stats/room endpoint, which does not
-  // filter by status). One aggregation instead of the old find-per-question N+1 loop.
+  // filter by status). One aggregation instead of the old find-per-question N+1 loop. Each entry
+  // carries isRemediation so the frontend can keep remediation questions out of the main analysis
+  // list without losing their stats entirely.
   const questionStats = allQuestions.map((q) => {
     const list = respByQuestion.get(toIdStr(q._id)) || []
     const answerCounts = {}
@@ -137,15 +144,21 @@ export async function buildSnapshot(roomId) {
       type: q.type,
       totalResponses: list.length,
       correctCount,
-      answerCounts
+      answerCounts,
+      isRemediation: !!q.isRemediation
     }
   })
+
+  // totalQuestions reflects the quiz the teacher actually built — remediation questions are
+  // personalized, generated after the fact, and would otherwise inflate this count (and the
+  // dashboard card that reads it) beyond what the teacher configured.
+  const mainQuestionCount = allQuestions.filter((q) => !q.isRemediation).length
 
   const stats = {
     totalResponses: responses.length,
     totalStudents: studentSet.size,
     totalJoined,
-    totalQuestions: allQuestions.length,
+    totalQuestions: mainQuestionCount,
     questionStats
   }
 
