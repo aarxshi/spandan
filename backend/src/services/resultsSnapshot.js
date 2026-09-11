@@ -95,18 +95,44 @@ export async function buildSnapshot(roomId) {
     .filter((q) => q.status === 'approved')
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
 
+  // A remediation doc is created as a '(generating…)' placeholder (status: 'approved') the
+  // instant generation starts, then flips to 'ready' once the LLM call succeeds — or 'failed'/
+  // stays stuck 'pending' if it doesn't. ensureRemediationQuestion() already treats anything
+  // short of 'ready' as "no remediation question for this one" and returns null to its own
+  // caller, but that placeholder ROW still exists in the DB with status 'approved' — so without
+  // this filter it leaks into the results payload as a literal "(generating…)" question with no
+  // options. Keep results consistent with what ensureRemediationQuestion() considers to exist.
+  const visibleForResults = approved.filter((q) => !q.isRemediation || q.generationStatus === 'ready')
+
   // Per-student breakdown, byte-identical (key order included) to the payload built by
   // GET /responses/room/:roomId/student/:studentId, so cache and direct-compute are indistinguishable.
   const byStudent = {}
   for (const sid of studentSet) {
     const byQ = respByStudentQ.get(sid)
-    byStudent[sid] = approved.map((q) => {
+    byStudent[sid] = visibleForResults.map((q) => {
       const resp = byQ && byQ.get(toIdStr(q._id))
+      if (q.isRemediation) {
+        // Remediation questions are cached/shared PER PARENT QUESTION across the whole room (see
+        // ensureRemediationQuestion) — one doc can serve every student who missed that question,
+        // so it is NOT specific to any one student. Without this check every student in the room
+        // would see every follow-up ever generated for anyone, including questions they answered
+        // correctly (or never saw), each falsely flagged "didn't complete" on their own results.
+        // Only show it to a student who actually got the parent question wrong.
+        const parentResp = byQ && byQ.get(toIdStr(q.parentQuestionId))
+        if (!parentResp || parentResp.isCorrect) return null
+      }
+      // Remediation (follow-up) questions must not reveal which option is correct until the
+      // student has actually answered — if the remediation page closes early (glitch, back
+      // button, timeout) before submission, the results payload itself must not leak isCorrect;
+      // hiding it only in the UI isn't enough since the JSON is visible via devtools/API.
+      const options = (q.isRemediation && !resp)
+        ? q.options.map(o => (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o)
+        : q.options
       return {
         _id: toIdStr(q._id),
         question: q.question,
         type: q.type,
-        options: q.options,
+        options,
         segmentIndex: q.segmentIndex,
         maxPoints: q.points,
         timeToAnswer: q.timeToAnswer,
@@ -122,7 +148,7 @@ export async function buildSnapshot(roomId) {
         }),
         createdAt: q.createdAt
       }
-    })
+    }).filter(Boolean)
   }
 
   // Per-question stats over ALL questions (matches the current stats/room endpoint, which does not

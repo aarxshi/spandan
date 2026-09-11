@@ -33,19 +33,18 @@ dotenv.config()
 
 const BASE_PATH = process.env.BASE_PATH || ''
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3001').split(',').map(s => s.trim())
-// Socket.IO's own handshake path (distinct from BASE_PATH's use for REST routes). Must match
-// whatever path the frontend's io() client and any reverse proxy (server.js/nginx) use, or the
-// socket handshake 404s and students silently never connect. Defaults to BASE_PATH + /socket.io
-// so a single BASE_PATH still keeps everything in sync; override with SOCKET_PATH if needed.
-const SOCKET_PATH = process.env.SOCKET_PATH || (BASE_PATH ? `${BASE_PATH}/socket.io` : '/socket.io')
 
 // Request timeout middleware - defined BEFORE use due to hoisting
 const requestTimeout = (req, res, next) => {
   // Question generation calls an LLM synchronously; for long transcripts (e.g. a
   // 10- or 30-minute session) that can take minutes, so those routes get a much
-  // longer timeout. Everything else keeps the tight 30s cap.
-  const isGeneration = req.path.startsWith('/api/questions/generate')
-  const timeoutMs = isGeneration ? 300000 : 30000 // 5 min for generation, 30s otherwise
+  // longer timeout. Remediation generation does the same kind of synchronous LLM call, and at
+  // scale (100s of students) can now also queue behind the shared generation worker's concurrency
+  // limit and retry several times with backoff (see questionService.js) — worst case, a student
+  // needing 2 sequential remediation questions that both queue+retry can take a few minutes. It
+  // needs at least as much room as question generation. Everything else keeps the tight 30s cap.
+  const isGeneration = req.path.startsWith('/api/questions/generate') || req.path.startsWith('/api/remediation/generate')
+  const timeoutMs = isGeneration ? 600000 : 30000 // 10 min for generation, 30s otherwise
 
   req.setTimeout(timeoutMs, () => {
     if (!res.headersSent) {
@@ -66,7 +65,7 @@ const requestTimeout = (req, res, next) => {
 const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
-  path: SOCKET_PATH,
+  path: BASE_PATH + '/socket.io',
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, curl, Socket.IO polling)
@@ -711,7 +710,7 @@ io.on('connection', (socket) => {
     // Pre-generate this question's remediation question now, in the background, instead of
     // waiting until room end. By the time students reach the remediation page, generation is
     // usually already done (or in flight and race-safe) rather than a cold LLM call each time —
-    // see preGenerateRemediation() below for why the delay and race-safety matter.
+    // see preGenerateRemediation() above for why the delay and race-safety matter.
     if (data.questionId) preGenerateRemediation(room, data.questionId)
   })
 

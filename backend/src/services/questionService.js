@@ -396,7 +396,7 @@ export function parseOptions(options, type) {
 }
 
 // MiniMax API call
-async function generateWithMiniMax(prompt) {
+async function generateWithMiniMax(prompt, maxTokens = 8000, disableThinking = false) {
   const response = await fetch('https://api.minimax.io/v1/text/chatcompletion_v2', {
     method: 'POST',
     headers: {
@@ -412,7 +412,13 @@ async function generateWithMiniMax(prompt) {
         }
       ],
       temperature: 0.7,
-      max_tokens: 8000
+      max_tokens: maxTokens,
+      // MiniMax-M3 thinks by default, and thinking tokens draw from the same max_tokens budget
+      // as the actual answer — with a small budget (e.g. for remediation) the model can burn the
+      // whole thing on hidden reasoning and leave nothing for the JSON we actually need (see the
+      // "16 chars, no closing JSON" failure this caused). Opt-in only, so full quiz generation
+      // (which has room for reasoning within its 8000-token budget) keeps its existing behavior.
+      ...(disableThinking ? { thinking: { type: 'disabled' } } : {})
     })
   })
 
@@ -455,7 +461,7 @@ async function generateWithMiniMax(prompt) {
 }
 
 // OpenAI API call
-async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
+async function generateWithOpenAI(prompt, model = 'gpt-4o-mini', maxTokens = 8000) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -471,7 +477,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
         }
       ],
       temperature: 0.7,
-      max_tokens: 8000
+      max_tokens: maxTokens
     })
   })
 
@@ -485,7 +491,7 @@ async function generateWithOpenAI(prompt, model = 'gpt-4o-mini') {
 }
 
 // Anthropic (Claude) API call
-async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514') {
+async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514', maxTokens = 8000) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -501,7 +507,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
           content: prompt
         }
       ],
-      max_tokens: 8000,
+      max_tokens: maxTokens,
       temperature: 0.7
     })
   })
@@ -516,7 +522,7 @@ async function generateWithAnthropic(prompt, model = 'claude-sonnet-4-20250514')
 }
 
 // Google Gemini API call
-async function generateWithGoogle(prompt, model = 'gemini-3.5-flash') {
+async function generateWithGoogle(prompt, model = 'gemini-3.5-flash', maxTokens = 8000) {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.googleApiKey}`, {
     method: 'POST',
     headers: {
@@ -534,7 +540,7 @@ async function generateWithGoogle(prompt, model = 'gemini-3.5-flash') {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 8000
+        maxOutputTokens: maxTokens
       }
     })
   })
@@ -597,6 +603,63 @@ export async function generateQuestions(transcript, cfg) {
 
   return questions
 }
+
+// --- Remediation question generation ----------------------------------------------------------
+//
+// Dispatches a single raw prompt to the given provider. Exported so worker.js can call it from
+// inside the BullMQ 'generate-remediation' job processor — concurrency across both quiz generation
+// and remediation generation is bounded by that Worker's single `concurrency` option (see
+// worker.js), the same queue+worker infrastructure quiz generation already uses, rather than a
+// separate in-process semaphore living here.
+export async function callProviderRaw(provider, prompt, maxTokens = 8000) {
+  switch (provider) {
+    case 'minimax':
+      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
+      return await generateWithMiniMax(prompt, maxTokens)
+    case 'openai':
+      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
+      return await generateWithOpenAI(prompt, undefined, maxTokens)
+    case 'anthropic':
+      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
+      return await generateWithAnthropic(prompt, undefined, maxTokens)
+    case 'google':
+      if (!config.googleApiKey) throw new Error('Google API key not configured')
+      return await generateWithGoogle(prompt, undefined, maxTokens)
+    default:
+      throw new Error(`Unknown provider: ${provider}`)
+  }
+}
+
+const RETRYABLE_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504])
+const RETRYABLE_MESSAGE_PATTERN = /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|fetch failed|network/i
+export const LLM_MAX_ATTEMPTS = Number(process.env.REMEDIATION_LLM_MAX_ATTEMPTS) || 4
+
+export function isRetryableProviderError(err) {
+  const message = err?.message || ''
+  const statusMatch = message.match(/API error:\s*(\d+)/)
+  if (statusMatch && RETRYABLE_STATUS_CODES.has(Number(statusMatch[1]))) return true
+  return RETRYABLE_MESSAGE_PATTERN.test(message)
+}
+
+// Sync fallback used only when Redis/BullMQ is disabled (see generateRemediationQuestion below) —
+// retries transient failures with backoff, same policy as the queued path, just running inline on
+// the API process instead of behind the worker's concurrency cap.
+async function callProviderWithRetrySync(provider, prompt, maxTokens = 8000) {
+  let lastErr
+  for (let attempt = 1; attempt <= LLM_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await callProviderRaw(provider, prompt, maxTokens)
+    } catch (err) {
+      lastErr = err
+      if (!isRetryableProviderError(err) || attempt === LLM_MAX_ATTEMPTS) throw err
+      const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 10000) + Math.random() * 500
+      console.warn(`[remediation] Provider call failed (attempt ${attempt}/${LLM_MAX_ATTEMPTS}), retrying in ${Math.round(backoffMs)}ms: ${err.message}`)
+      await new Promise(r => setTimeout(r, backoffMs))
+    }
+  }
+  throw lastErr
+}
+
 // Build prompt for remediation question generation
 export function buildRemediationPrompt(originalQuestion, correctAnswer, mostPickedWrongAnswer, wrongAnswerText, explanation) {
   return `You are an expert educational assessment designer. A student answered a question incorrectly.
@@ -606,13 +669,14 @@ CORRECT ANSWER: ${correctAnswer}
 MOST COMMON WRONG ANSWER: ${wrongAnswerText}
 EXPLANATION OF CORRECT ANSWER: ${explanation || 'Not provided'}
 
-The student chose the wrong answer, suggesting a specific misconception. Generate exactly ONE remediation MCQ question that:
-1. Tests the SAME concept from a DIFFERENT ANGLE — not a rephrasing of the original
-2. Is designed to CORRECT the specific misconception implied by choosing "${wrongAnswerText}"
-3. Makes the student APPLY or REASON about the concept, not just recall it
-4. Has 4 options with exactly ONE correct answer and 3 plausible distractors
+The student chose the wrong answer, suggesting a specific misconception. Generate exactly ONE follow-up MCQ question that:
+1. Targets Bloom's Taxonomy Level 3 (Application) or Level 4 (Analysis) — NOT recall or comprehension
+2. Frames a short, concrete scenario or case (1-3 sentences) that makes the student APPLY or ANALYSE the concept in a new context — not just remember a definition
+3. Is designed to CORRECT the specific misconception implied by choosing "${wrongAnswerText}"
+4. Does NOT reference the original question — write it as a completely standalone question
+5. Has 4 options with exactly ONE correct answer and 3 plausible distractors
 
-Do NOT reference the original question. Write it as a standalone question.
+Keep the scenario brief — this is a quick follow-up question, not a long case study. Respond immediately with ONLY the JSON below. No reasoning, no preamble, no text outside the JSON.
 
 OUTPUT FORMAT (respond ONLY with valid JSON):
 {
@@ -632,29 +696,43 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
 }`
 }
 
+// Remediation generates ONE MCQ, but per the Bloom's Taxonomy Level 3/4 requirement in
+// buildRemediationPrompt (a concrete scenario that specifically targets a misconception), this is
+// a genuinely harder writing task than plain recall — a reasoning model will spend real thinking
+// tokens working it out before answering. 1200 was too tight for that and caused truncated,
+// unparseable JSON (content cut off at "16 chars" with no closing brace). This is generous enough
+// to avoid that while still being well under the 8000 a full multi-question quiz needs.
+// Configurable in case a given provider/model needs more (or can get away with less).
+const REMEDIATION_MAX_TOKENS = Number(process.env.REMEDIATION_MAX_TOKENS) || 4000
+
 export async function generateRemediationQuestion(originalQuestion, correctAnswer, wrongAnswerText, explanation, provider = 'minimax') {
   const prompt = buildRemediationPrompt(originalQuestion, correctAnswer, null, wrongAnswerText, explanation)
 
+  // Routed through the same BullMQ queue + worker that quiz generation uses (see
+  // generationQueue.js / worker.js), instead of a separate in-process concurrency limiter — this
+  // is what protects against the rate-limit stampede when many distinct questions all need
+  // generation within the same few seconds of a room ending, while keeping the app to ONE
+  // concurrency-control system for LLM calls. Falls back to a synchronous in-process call with the
+  // same retry policy when Redis is disabled, mirroring generateQuestions()'s sync fallback above.
+  const { getGenerationQueue, getGenerationQueueEvents } = await import('./generationQueue.js')
+  const queue = getGenerationQueue()
+
   let responseText
-  switch (provider) {
-    case 'minimax':
-      if (!config.minimaxApiKey) throw new Error('MiniMax API key not configured')
-      responseText = await generateWithMiniMax(prompt)
-      break
-    case 'openai':
-      if (!config.openaiApiKey) throw new Error('OpenAI API key not configured')
-      responseText = await generateWithOpenAI(prompt)
-      break
-    case 'anthropic':
-      if (!config.anthropicApiKey) throw new Error('Anthropic API key not configured')
-      responseText = await generateWithAnthropic(prompt)
-      break
-    case 'google':
-      if (!config.googleApiKey) throw new Error('Google API key not configured')
-      responseText = await generateWithGoogle(prompt)
-      break
-    default:
-      throw new Error(`Unknown provider: ${provider}`)
+  if (queue) {
+    const job = await queue.add(
+      'generate-remediation',
+      { provider, prompt, maxTokens: REMEDIATION_MAX_TOKENS },
+      {
+        attempts: 1, // retries are handled inside the worker's job processor (see worker.js), so
+                     // BullMQ doesn't also retry the whole job on top of that
+        removeOnComplete: { age: 900 },
+        removeOnFail: { age: 900 }
+      }
+    )
+    const queueEvents = getGenerationQueueEvents()
+    responseText = await job.waitUntilFinished(queueEvents, Number(process.env.REMEDIATION_JOB_WAIT_MS) || 120000)
+  } else {
+    responseText = await callProviderWithRetrySync(provider, prompt, REMEDIATION_MAX_TOKENS)
   }
 
   const parsed = parseQuestions(responseText, ['MCQ'])
@@ -676,6 +754,11 @@ export async function generateRemediationQuestion(originalQuestion, correctAnswe
 // with a duplicate-key error (11000) — they catch that, look up the doc the winner is
 // populating, and poll it briefly until it flips to 'ready' (or 'failed').
 //
+// This DB-level lock is solving a different problem than the BullMQ queue above: it's deduping
+// the SAME remediation question across many students hitting /generate at once, so only one LLM
+// call ever happens per parent question — the queue then bounds how many of those (already-deduped)
+// LLM calls run concurrently process-wide.
+//
 // Crash recovery: if the winning process dies (OOM, deploy, crash) between claiming the
 // placeholder and finishing the LLM call, the doc is stuck in 'pending' forever — nothing ever
 // flips it to 'failed', so the normal failed-doc reclaim path never kicks in, and every future
@@ -684,10 +767,21 @@ export async function generateRemediationQuestion(originalQuestion, correctAnswe
 // "the claimant died a while ago" — a 'pending' doc older than REMEDIATION_STALL_MS is treated as
 // abandoned and reclaimed the same way a 'failed' doc is.
 const REMEDIATION_POLL_INTERVAL_MS = 400
-const REMEDIATION_POLL_TIMEOUT_MS = 15000 // LLM calls are usually 3-5s; this covers slow ones with room to spare
-// Well past any single LLM call (including the poll timeout above) — a 'pending' doc still
+// Application/Analysis-level MCQs need real reasoning time (read a short scenario + weigh 4
+// options), not just recall — but the parent question's own timer isn't a reliable signal for
+// that: it could've been a quick 10-15s recall item, which would leave a remediation question far
+// too little time. Flat and independent of the parent since every remediation question is the same
+// shape by design (short scenario + 4-option MCQ). Tunable without touching the create() call below.
+const REMEDIATION_TIME_SECONDS = Number(process.env.REMEDIATION_TIME_SECONDS) || 30
+// With retries + the concurrency queue above, a single generation can now legitimately take much
+// longer than a bare LLM call (queue wait + up to LLM_MAX_ATTEMPTS retries with backoff). At scale
+// (100s of students, many distinct questions queued behind a small concurrency cap) that queue
+// wait can be real, so this is deliberately generous — better to make a waiting student wait than
+// to give up and show them nothing. Configurable since the right value depends on class size.
+const REMEDIATION_POLL_TIMEOUT_MS = Number(process.env.REMEDIATION_POLL_TIMEOUT_MS) || 90000
+// Well past any single generation (including retries and queue wait) — a 'pending' doc still
 // unclaimed after this long almost certainly means its owning process died, not that it's slow.
-const REMEDIATION_STALL_MS = REMEDIATION_POLL_TIMEOUT_MS + 5000
+const REMEDIATION_STALL_MS = REMEDIATION_POLL_TIMEOUT_MS + 30000
 
 function isStalledPending(doc) {
   if (!doc || doc.generationStatus !== 'pending') return false
@@ -793,7 +887,7 @@ export async function ensureRemediationQuestion(roomId, parentQuestion, provider
         question: '(generating…)',
         options: [],
         segmentIndex: parentQuestion.segmentIndex,
-        timeToAnswer: parentQuestion.timeToAnswer || 30,
+        timeToAnswer: REMEDIATION_TIME_SECONDS,
         points: Math.round((parentQuestion.points || 100) * 0.5), // half points for remediation
         status: 'approved',
         isRemediation: true,

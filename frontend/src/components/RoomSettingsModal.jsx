@@ -401,7 +401,6 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
         </div>
 
         {/* Anonymous Leaderboard */}
-        {/* Follow-up Questions */}
         <div style={{ marginBottom: '24px' }}>
           <label style={{
             display: 'block',
@@ -526,6 +525,17 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Follow-up Questions */}
+        <div style={{ marginBottom: '24px' }}>
+          <label style={{
+            display: 'block',
+            marginBottom: '8px',
+            fontSize: '14px',
+            fontWeight: '500',
+            color: 'var(--text-primary)'
+          }}>
             Follow-up Questions per Student
           </label>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -552,7 +562,8 @@ function RoomSettingsModal({ isOpen, onClose, settings, onSave }) {
             ))}
           </div>
           <p style={{ margin: '8px 0 0', fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Follow-up questions shown to students who answer incorrectly after the session ends
+            After the room ends, students who missed a question get up to this many personalized
+            follow-up questions covering the hardest things they got wrong.
           </p>
         </div>
 

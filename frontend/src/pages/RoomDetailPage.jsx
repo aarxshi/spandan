@@ -106,8 +106,7 @@ function RoomDetailPage() {
     questionProvider: 'minimax',
     questionTypeMix: { MCQ: 0, TF: 100, MSQ: 0 },
     timeToAnswer: 30,
-    points: 100,
-    maxFollowUpQuestions: 2
+    points: 100
   })
   const [totalParticipants, setTotalParticipants] = useState(0)
   const [answerCounts, setAnswerCounts] = useState({}) // questionId -> count
@@ -1241,13 +1240,6 @@ function RoomDetailPage() {
 
   const isEnded = !!room.endedAt
 
-  // Remediation questions are generated live (right after question:end, see backend pre-generation)
-  // and can land in generatedQuestions mid-session. They're personalized per-student and answered
-  // outside this session flow, so the "Session Questions" panel — which is the teacher's view of
-  // the quiz they built — excludes them here rather than showing them mixed in with (and numbered
-  // alongside) the real quiz questions, which would look like a glitch.
-  const sessionQuestions = generatedQuestions.filter(q => !q.isRemediation)
-
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-primary)', width: '100vw', maxWidth: '100vw', overflowX: 'hidden' }}>
       <Sidebar user={user} />
@@ -1868,7 +1860,7 @@ function RoomDetailPage() {
               <span style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
                 Session Questions
               </span>
-              {sessionQuestions.length > 0 && (
+              {generatedQuestions.length > 0 && (
                 <span style={{
                   padding: '2px 10px',
                   background: '#d1fae5',
@@ -1877,15 +1869,15 @@ function RoomDetailPage() {
                   fontSize: '12px',
                   fontWeight: '600'
                 }}>
-                  {sessionQuestions.length}
+                  {generatedQuestions.length}
                 </span>
               )}
             </div>
 
-            {sessionQuestions.length > 0 ? (
+            {generatedQuestions.length > 0 ? (
               <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '60vh', overflowY: 'auto', paddingRight: '4px' }}>
-                {sessionQuestions.map((q, index) => (
+                {generatedQuestions.map((q, index) => (
                   <div key={q._id || index} style={{
                     padding: '14px 16px',
                     background: 'var(--bg-primary)',
@@ -1993,7 +1985,7 @@ function RoomDetailPage() {
                   </div>
                 ))}
               </div>
-              {sessionQuestions.length > 6 && (
+              {generatedQuestions.length > 6 && (
                 <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: '36px', background: 'linear-gradient(to bottom, rgba(var(--bg-card-rgb), 0), rgba(var(--bg-card-rgb), 1))', pointerEvents: 'none', borderRadius: '0 0 10px 10px' }} />
               )}
               </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
+import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
 import ThemeToggle from '../components/ThemeToggle'
 import ProfileDropdown from '../components/ProfileDropdown'
@@ -14,6 +15,7 @@ function RoomResultsPage() {
   const navigate = useNavigate()
   const { user, token } = useAuthStore()
   const { setAuthToken } = useRoomStore()
+  const { socket, joinRoom, leaveRoom } = useSocketStore()
   const isMobile = useIsMobile()
 
   const [room, setRoom] = useState(null)
@@ -33,6 +35,27 @@ function RoomResultsPage() {
       fetchRoomData()
     }
   }, [token, roomId])
+
+  // Join the room's socket channel and listen for remediation submissions, so a teacher sitting
+  // on this page sees new remediation answers come in live instead of needing to refresh.
+  // RoomDetailPage already leaves this channel when the room is ended, so this page has to
+  // (re)join it for itself. Students don't need this — their own answer already updates their
+  // view instantly via local state, and other students' answers don't affect what they see.
+  useEffect(() => {
+    if (user?.role !== 'teacher' || !room?.code || !user?._id || !socket) return
+
+    joinRoom(room.code, user._id)
+
+    const handleRemediationSubmitted = () => {
+      fetchRoomData()
+    }
+    socket.on('remediation:submitted', handleRemediationSubmitted)
+
+    return () => {
+      socket.off('remediation:submitted', handleRemediationSubmitted)
+      leaveRoom(room.code, user._id)
+    }
+  }, [room?.code, user?._id, user?.role, socket])
 
   const fetchRoomData = async () => {
     setIsLoading(true)
@@ -666,7 +689,10 @@ function RoomResultsPage() {
 
                           <div style={{ display: 'grid', gap: '8px' }}>
                             {q.options && q.options.map((opt, optIdx) => {
-                              const isCorrect = opt.isCorrect
+                              // for follow-up questions, only reveal correct answer if student has answered
+                              // (teachers always see the correct answer)
+                              const showCorrectAnswer = isTeacher || q.answered
+                              const isCorrect = showCorrectAnswer && opt.isCorrect
                               const isSelected = q.selectedOption === optIdx
                               const showAsSelected = isTeacher ? isCorrect : isSelected
                               const highlightStyle = showAsSelected
@@ -723,6 +749,20 @@ function RoomResultsPage() {
                               )
                             })}
                           </div>
+
+                          {!isTeacher && !q.answered && (
+                            <div style={{
+                              marginTop: '12px',
+                              padding: '12px',
+                              background: 'rgba(245,158,11,0.1)',
+                              borderRadius: '8px',
+                              color: '#d97706',
+                              fontSize: '13px',
+                              fontWeight: '600'
+                            }}>
+                              ⚠️ You didn't complete this follow-up question
+                            </div>
+                          )}
                         </div>
 
                         <div style={{

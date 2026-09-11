@@ -607,14 +607,36 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
     // longer current (next launch / room end → revealed via the normal path / results snapshot).
     const activeQid = (!ended && room?.currentQuestion) ? String(room.currentQuestion) : null
 
-    // Merge questions with response data
-    const questionsWithResponses = questions.map(q => {
+    // Merge questions with response data. A remediation doc is created as a '(generating…)'
+    // placeholder (status: 'approved') the instant generation starts, then flips to
+    // generationStatus 'ready' once the LLM call succeeds — or 'failed'/stuck 'pending' if it
+    // doesn't. ensureRemediationQuestion() already treats anything short of 'ready' as "no
+    // remediation question for this one", so skip those placeholder rows here too rather than
+    // leaking the literal "(generating…)" text and an empty option list to the student.
+    //
+    // Remediation questions are cached/shared PER PARENT QUESTION across the whole room (see
+    // ensureRemediationQuestion) — one doc can serve every student who missed that question, so it
+    // is NOT specific to any one student. Without the parentResp check below, every student in the
+    // room would see every follow-up ever generated for anyone, including questions they answered
+    // correctly (or never saw) — matches the filter resultsSnapshot.js applies for ended rooms, so
+    // a student sees the same set of remediation questions whether the room is live or over.
+    const questionsWithResponses = questions
+      .filter(q => !q.isRemediation || q.generationStatus === 'ready')
+      .map(q => {
       const qIdStr = toIdString(q._id)
       const studentResponse = responseMap[qIdStr]
+      if (q.isRemediation) {
+        const parentResponse = responseMap[toIdString(q.parentQuestionId)]
+        if (!parentResponse || parentResponse.isCorrect) return null
+      }
       const isActive = !!activeQid && qIdStr === activeQid
-      // Strip which option is correct for the still-live poll. Map to NEW objects — the question list
-      // is a shared cache and must never be mutated (see the cache's read-only invariant).
-      const options = isActive
+      // Strip which option is correct for the still-live poll, and for a remediation (follow-up)
+      // question the student hasn't answered yet (e.g. remediation page closed early on a glitch)
+      // — otherwise an unanswered follow-up's correct option ships in the JSON regardless of how
+      // the results page renders it. Map to NEW objects — the question list is a shared cache and
+      // must never be mutated (see the cache's read-only invariant).
+      const hideCorrectness = isActive || (q.isRemediation && !studentResponse)
+      const options = hideCorrectness
         ? q.options.map(o => (o && typeof o === 'object') ? (({ isCorrect, ...opt }) => opt)(o) : o)
         : q.options
       
@@ -645,7 +667,7 @@ router.get('/room/:roomId/student/:studentId', async (req, res) => {
         }),
         createdAt: q.createdAt
       }
-    })
+    }).filter(Boolean)
 
     res.json({
       success: true,

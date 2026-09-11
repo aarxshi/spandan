@@ -94,6 +94,11 @@ router.post('/generate', authorize('student'), async (req, res) => {
       }
     }
 
+    // If our own timeout middleware already gave up and responded (see index.js's
+    // requestTimeout) while we were still waiting on generation, headers are already sent —
+    // calling res.json() again would throw and, from inside a catch block, crash the process.
+    if (res.headersSent) return
+
     res.json({
       success: true,
       questions: remediationQuestions,
@@ -101,9 +106,18 @@ router.post('/generate', authorize('student'), async (req, res) => {
       // silently handing back fewer questions than the student expects.
       failedCount
     })
+
+    // The results snapshot for this room was very likely built (and cached for SNAPSHOT_TTL_MS)
+    // BEFORE this remediation question existed — e.g. pre-warmed at room end, or built by whoever
+    // hit results first. Without dropping it, this student's freshly-generated (or newly-failed,
+    // now-excluded) remediation question never shows up on their results page until the cache
+    // happens to expire. Fire-and-forget, after the response so it doesn't add latency to /generate.
+    if (remediationQuestions.length > 0) {
+      resultsSnapshot.invalidate(roomId).catch(() => {})
+    }
   } catch (error) {
     console.error('[remediation] Error:', error)
-    res.status(500).json({ error: 'Failed to generate remediation questions' })
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to generate remediation questions' })
   }
 })
 
@@ -113,6 +127,7 @@ router.post('/submit', authorize('student'), async (req, res) => {
   try {
     const Question = (await import('../models/Question.js')).default
     const Response = (await import('../models/Response.js')).default
+    const Room = (await import('../models/Room.js')).default
 
     const { roomId, questionId, selectedOptions, responseTime } = req.body
     const studentId = req.user._id
@@ -153,6 +168,27 @@ router.post('/submit', authorize('student'), async (req, res) => {
     // results-page load rebuilds fresh. Best-effort: a failure here shouldn't fail the submit.
     resultsSnapshot.invalidate(roomId).catch(() => {})
 
+    // A teacher who's already sitting on the results page (having ended the room a while ago) has
+    // no other way of finding out a remediation answer just came in — nothing re-polls after room
+    // end. Broadcast it so their page can refresh itself instead of needing a manual reload.
+    // Best-effort: a broadcast failure shouldn't fail the student's submit.
+    try {
+      const room = await Room.findById(roomId).select('code').lean()
+      if (room?.code) {
+        req.app.get('io')?.to(room.code).emit('remediation:submitted', {
+          roomId,
+          questionId,
+          studentId,
+          isCorrect,
+          points
+        })
+      }
+    } catch (broadcastErr) {
+      console.error('[remediation] Failed to broadcast submission:', broadcastErr.message)
+    }
+
+    if (res.headersSent) return
+
     res.status(201).json({
       success: true,
       isCorrect,
@@ -162,7 +198,7 @@ router.post('/submit', authorize('student'), async (req, res) => {
     })
   } catch (error) {
     console.error('[remediation] Submit error:', error)
-    res.status(500).json({ error: 'Failed to submit answer' })
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to submit answer' })
   }
 })
 

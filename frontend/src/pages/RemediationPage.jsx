@@ -70,6 +70,15 @@ function RemediationPage() {
         body: JSON.stringify({ roomId, maxQuestions })
       })
       const data = await res.json()
+      if (!res.ok) {
+        // A non-2xx (403 not a member, 404 room not found, 500, etc.) still parses as valid JSON
+        // here, so without this check it silently fell into the "no remediation" branch below and
+        // redirected to results with zero indication anything went wrong — looked exactly like a
+        // random glitch instead of a real, diagnosable server error.
+        console.error('[remediation] /generate failed:', res.status, data?.error || data)
+        setError(data?.error || `Failed to load remediation questions (${res.status})`)
+        return
+      }
       if (data.success && data.questions.length > 0) {
         setQuestions(data.questions)
         setFailedCount(data.failedCount || 0)
