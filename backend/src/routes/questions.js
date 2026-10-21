@@ -161,7 +161,7 @@ router.post('/', authorize('teacher'), requireApprovedTeacher, async (req, res) 
 // GET /api/questions?roomId=xxx - Get all questions for a room
 router.get('/', async (req, res) => {
   try {
-    const { roomId, page = 1, limit = 50 } = req.query
+    const { roomId, page = 1, limit = 50, includeRemediation } = req.query
     if (!roomId) {
       return res.status(400).json({ error: 'roomId is required' })
     }
@@ -189,7 +189,18 @@ router.get('/', async (req, res) => {
     // strip the correct-option flags. Otherwise a member could pull every question with `isCorrect`
     // straight from here, bypassing the UI. (Their legitimate past-question results come from
     // GET /responses/room/:roomId/student/:studentId once a poll is no longer live.)
-    const filter = isTeacher ? { roomId } : { roomId, status: 'approved' }
+    // Follow-up (remediation) questions are per-student practice generated after the fact, not part
+    // of the quiz the teacher manages live or that students are served here (students get their own
+    // follow-ups via /responses/room/:roomId/student/:id). Only the teacher's results page opts in
+    // (?includeRemediation=true) to review them, and then only finished ones — never the
+    // '(generating…)' / failed placeholders.
+    const teacherWantsFollowUps = isTeacher && includeRemediation === 'true'
+    const notRemediation = { isRemediation: { $ne: true } }
+    const filter = isTeacher
+      ? (teacherWantsFollowUps
+          ? { roomId, $or: [notRemediation, { isRemediation: true, generationStatus: 'ready' }] }
+          : { roomId, ...notRemediation })
+      : { roomId, status: 'approved', ...notRemediation }
 
     const [questions, total] = await Promise.all([
       Question.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).lean(),

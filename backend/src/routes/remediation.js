@@ -6,6 +6,19 @@ import * as resultsSnapshot from '../services/resultsSnapshot.js'
 const router = express.Router()
 router.use(authenticate)
 
+// Many students submit / generate at once at room end, and each one used to drop the results
+// snapshot, forcing constant rebuilds right when everyone loads results. Coalesce: at most one
+// invalidation per room per window (the last answer in a burst is still picked up).
+const invalidatePending = new Map()
+function invalidateSoon(roomId, ms = 10000) {
+  const key = String(roomId)
+  if (invalidatePending.has(key)) return
+  invalidatePending.set(key, setTimeout(() => {
+    invalidatePending.delete(key)
+    resultsSnapshot.invalidate(roomId).catch(() => {})
+  }, ms))
+}
+
 // POST /api/remediation/generate
 // Called when room ends — finds the hardest questions class-wide that this student got wrong,
 // generates remediation questions (one per parent question, cached so multiple students share the same LLM call result)
@@ -29,6 +42,12 @@ router.post('/generate', authorize('student'), async (req, res) => {
     // Get room for provider setting
     const room = await Room.findById(roomId).lean()
     if (!room) return res.status(404).json({ error: 'Room not found' })
+    // Follow-ups only exist after the room has ended. Before that, calling this would reveal whether
+    // the student got a live question wrong (non-empty result) and could generate an explanation
+    // that gives away the answer to a poll that is still running.
+    if (!room.endedAt) {
+      return res.status(409).json({ error: 'Room has not ended yet' })
+    }
     const provider = room.settings?.questionProvider || 'minimax'
 
     // The room's own setting is the authority, not the client: maxQuestions comes straight from the
@@ -103,6 +122,19 @@ router.post('/generate', authorize('student'), async (req, res) => {
       }
     }
 
+    // Don't hand back follow-ups this student already answered (page refresh / back button after
+    // finishing) — otherwise they'd be asked again and every submit would 409. If they've answered
+    // everything the list is empty and the page sends them straight to results.
+    let unanswered = remediationQuestions
+    if (remediationQuestions.length > 0) {
+      const done = await Response.find({
+        roomId, studentId, isRemediation: true,
+        questionId: { $in: remediationQuestions.map(q => q._id) }
+      }).select('questionId').lean()
+      const doneIds = new Set(done.map(d => String(d.questionId)))
+      unanswered = remediationQuestions.filter(q => !doneIds.has(String(q._id)))
+    }
+
     // If our own timeout middleware already gave up and responded (see index.js's
     // requestTimeout) while we were still waiting on generation, headers are already sent —
     // calling res.json() again would throw and, from inside a catch block, crash the process.
@@ -110,7 +142,12 @@ router.post('/generate', authorize('student'), async (req, res) => {
 
     res.json({
       success: true,
-      questions: remediationQuestions,
+      // Never ship which option is correct (or the explanation) before the student answers —
+      // /submit returns correctOption + explanation once they have.
+      questions: unanswered.map(({ explanation, options, ...rest }) => ({
+        ...rest,
+        options: (options || []).map(({ isCorrect, ...opt }) => opt)
+      })),
       // Lets the frontend say "we couldn't prepare N of your remediation questions" instead of
       // silently handing back fewer questions than the student expects.
       failedCount
@@ -122,7 +159,7 @@ router.post('/generate', authorize('student'), async (req, res) => {
     // now-excluded) remediation question never shows up on their results page until the cache
     // happens to expire. Fire-and-forget, after the response so it doesn't add latency to /generate.
     if (remediationQuestions.length > 0) {
-      resultsSnapshot.invalidate(roomId).catch(() => {})
+      invalidateSoon(roomId)
     }
   } catch (error) {
     console.error('[remediation] Error:', error)
@@ -138,22 +175,50 @@ router.post('/submit', authorize('student'), async (req, res) => {
     const Response = (await import('../models/Response.js')).default
     const Room = (await import('../models/Room.js')).default
 
-    const { roomId, questionId, selectedOptions, responseTime } = req.body
+    const RoomMember = (await import('../models/RoomMember.js')).default
+
+    const { roomId, questionId, selectedOptions, responseTime, timedOut } = req.body
     const studentId = req.user._id
+    // The timer ran out with nothing chosen: recorded as a wrong answer (selectedOption -1 matches no option).
+    const didTimeOut = timedOut === true
+
+    if (!roomId || !questionId || !Array.isArray(selectedOptions) ||
+        selectedOptions.length !== 1 || !Number.isInteger(selectedOptions[0])) {
+      return res.status(400).json({ error: 'roomId, questionId and a single selectedOptions index are required' })
+    }
+
+    const room = await Room.findById(roomId).select('code endedAt').lean()
+    if (!room || !room.endedAt) return res.status(409).json({ error: 'Room has not ended yet' })
+
+    const isMember = await RoomMember.findOne({ roomId, studentId })
+    if (!isMember) return res.status(403).json({ error: 'Not a member of this room' })
 
     const question = await Question.findById(questionId).lean()
-    if (!question || !question.isRemediation || question.generationStatus !== 'ready') {
+    if (!question || !question.isRemediation || question.generationStatus !== 'ready' ||
+        String(question.roomId) !== String(roomId)) {
       // Also guards against a stale client reference to a still-generating/failed placeholder
       // (empty options array), which would otherwise silently mark every answer wrong.
       return res.status(404).json({ error: 'Remediation question not found' })
     }
 
+    const idx = selectedOptions[0]
+    if (didTimeOut ? idx !== -1 : (idx < 0 || idx >= question.options.length)) {
+      return res.status(400).json({ error: 'Invalid option' })
+    }
+
+    // Only students who actually missed the parent question get to answer its follow-up.
+    const missedParent = await Response.exists({
+      roomId, studentId, questionId: question.parentQuestionId,
+      isCorrect: false, isRemediation: { $ne: true }
+    })
+    if (!missedParent) return res.status(403).json({ error: 'No follow-up for this question' })
+
     // Check if already answered
     const existing = await Response.findOne({ roomId, questionId, studentId })
     if (existing) return res.status(409).json({ error: 'Already answered this remediation question' })
 
-    const selectedOptionData = question.options[selectedOptions[0]]
-    const isCorrect = selectedOptionData?.isCorrect || false
+    const selectedOptionData = didTimeOut ? null : question.options[selectedOptions[0]]
+    const isCorrect = didTimeOut ? false : (selectedOptionData?.isCorrect || false)
     // Follow-ups are practice: correctness is recorded and shown, but they are worth no points and
     // are flagged so every score / rank / class statistic ignores them.
     const points = 0
@@ -177,14 +242,13 @@ router.post('/submit', authorize('student'), async (req, res) => {
     // remediation flow and immediately checks results can get served the frozen pre-remediation
     // snapshot (missing this answer entirely) for up to SNAPSHOT_TTL_MS. Drop it so the next
     // results-page load rebuilds fresh. Best-effort: a failure here shouldn't fail the submit.
-    resultsSnapshot.invalidate(roomId).catch(() => {})
+    invalidateSoon(roomId)
 
     // A teacher who's already sitting on the results page (having ended the room a while ago) has
     // no other way of finding out a remediation answer just came in — nothing re-polls after room
     // end. Broadcast it so their page can refresh itself instead of needing a manual reload.
     // Best-effort: a broadcast failure shouldn't fail the student's submit.
     try {
-      const room = await Room.findById(roomId).select('code').lean()
       if (room?.code) {
         req.app.get('io')?.to(room.code).emit('remediation:submitted', {
           roomId,

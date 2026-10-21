@@ -63,12 +63,12 @@ export const generateQuestions = async (transcript, config) => requestQuestionGe
 // Fetch ALL questions for a room, transparently paging past the API's per-page cap (default 50,
 // max 100). Callers that show a room's full question list / count must use this — a plain
 // `?roomId=` fetch silently returns only the first 50, so a 94-question room shows "50".
-export const fetchAllRoomQuestions = async (roomId) => {
+export const fetchAllRoomQuestions = async (roomId, { includeRemediation = false } = {}) => {
   const token = useAuthStore.getState().token
   const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {}
   const limit = 100 // request the API's max page size to minimize round-trips
   const getPage = async (page) => {
-    const res = await fetch(`${API_URL}/questions?roomId=${roomId}&limit=${limit}&page=${page}`, { headers: authHeader })
+    const res = await fetch(`${API_URL}/questions?roomId=${roomId}&limit=${limit}&page=${page}${includeRemediation ? '&includeRemediation=true' : ''}`, { headers: authHeader })
     if (!res.ok) throw new Error('Failed to load questions')
     return res.json()
   }

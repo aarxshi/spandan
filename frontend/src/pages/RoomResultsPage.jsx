@@ -58,19 +58,27 @@ function RoomResultsPage() {
 
     joinRoom(room.code, user._id)
 
+    // Every follow-up answer from every student fires this event, so refresh at most once per
+    // window (trailing) and silently — no full-page spinner, no blanking the insights.
+    let refreshTimer = null
     const handleRemediationSubmitted = () => {
-      fetchRoomData()
+      if (refreshTimer) return
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null
+        fetchRoomData(true)
+      }, 5000)
     }
     socket.on('remediation:submitted', handleRemediationSubmitted)
 
     return () => {
+      clearTimeout(refreshTimer)
       socket.off('remediation:submitted', handleRemediationSubmitted)
       leaveRoom(room.code, user._id)
     }
   }, [room?.code, user?._id, user?.role, socket])
 
-  const fetchRoomData = async () => {
-    setIsLoading(true)
+  const fetchRoomData = async (silent = false) => {
+    if (!silent) setIsLoading(true)
     try {
       // Fetch room details
       const roomRes = await fetch(`${API_URL}/rooms/${roomId}`, {
@@ -83,8 +91,10 @@ function RoomResultsPage() {
 
       // Session insights (one aggregated payload). Non-fatal: if it fails, the page falls back to the
       // plain summary cards and question list.
-      setInsights(null)
-      setInsightsFailed(false)
+      if (!silent) {
+        setInsights(null)
+        setInsightsFailed(false)
+      }
       fetch(`${API_URL}/responses/insights/${roomId}`, { headers: { 'Authorization': `Bearer ${token}` } })
         .then(r => (r.ok ? r.json() : null))
         .then(d => { if (d?.success) setInsights(d); else setInsightsFailed(true) })
@@ -146,7 +156,7 @@ function RoomResultsPage() {
         // Teacher: fetch ALL questions (pages past the API's 50/page cap) so results show the true
         // question count and every question's stats. Students don't need this — their per-response
         // call above already returns the questions with their answers merged in.
-        const roomQuestions = await fetchAllRoomQuestions(roomId)
+        const roomQuestions = await fetchAllRoomQuestions(roomId, { includeRemediation: true })
         setQuestions(roomQuestions)
 
         // Teacher: fetch full room stats once

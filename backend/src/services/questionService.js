@@ -705,6 +705,8 @@ OUTPUT FORMAT (respond ONLY with valid JSON):
 // Configurable in case a given provider/model needs more (or can get away with less).
 const REMEDIATION_MAX_TOKENS = Number(process.env.REMEDIATION_MAX_TOKENS) || 4000
 
+const REMEDIATION_JOB_WAIT_MS = Number(process.env.REMEDIATION_JOB_WAIT_MS) || 120000
+
 export async function generateRemediationQuestion(originalQuestion, correctAnswer, wrongAnswerText, explanation, provider = 'minimax') {
   const prompt = buildRemediationPrompt(originalQuestion, correctAnswer, null, wrongAnswerText, explanation)
 
@@ -723,6 +725,7 @@ export async function generateRemediationQuestion(originalQuestion, correctAnswe
       'generate-remediation',
       { provider, prompt, maxTokens: REMEDIATION_MAX_TOKENS },
       {
+        priority: 10, // lower priority than teacher quiz generation (non-prioritized jobs run first)
         attempts: 1, // retries are handled inside the worker's job processor (see worker.js), so
                      // BullMQ doesn't also retry the whole job on top of that
         removeOnComplete: { age: 900 },
@@ -730,7 +733,7 @@ export async function generateRemediationQuestion(originalQuestion, correctAnswe
       }
     )
     const queueEvents = getGenerationQueueEvents()
-    responseText = await job.waitUntilFinished(queueEvents, Number(process.env.REMEDIATION_JOB_WAIT_MS) || 120000)
+    responseText = await job.waitUntilFinished(queueEvents, REMEDIATION_JOB_WAIT_MS)
   } else {
     responseText = await callProviderWithRetrySync(provider, prompt, REMEDIATION_MAX_TOKENS)
   }
@@ -781,7 +784,8 @@ const REMEDIATION_TIME_SECONDS = Number(process.env.REMEDIATION_TIME_SECONDS) ||
 const REMEDIATION_POLL_TIMEOUT_MS = Number(process.env.REMEDIATION_POLL_TIMEOUT_MS) || 90000
 // Well past any single generation (including retries and queue wait) — a 'pending' doc still
 // unclaimed after this long almost certainly means its owning process died, not that it's slow.
-const REMEDIATION_STALL_MS = REMEDIATION_POLL_TIMEOUT_MS + 30000
+// Must outlast the job wait, otherwise a slow-but-alive generation looks abandoned and gets reclaimed.
+const REMEDIATION_STALL_MS = Math.max(REMEDIATION_POLL_TIMEOUT_MS, REMEDIATION_JOB_WAIT_MS) + 60000
 
 function isStalledPending(doc) {
   if (!doc || doc.generationStatus !== 'pending') return false
@@ -915,6 +919,10 @@ export async function ensureRemediationQuestion(roomId, parentQuestion, provider
   }
 
   // We won the race (or the retry) — we're the one who actually calls the LLM.
+  // Final writes are conditional on our claim still being current: if we were slow and someone
+  // reclaimed the doc (new generationStartedAt), we must not overwrite their attempt.
+  const claimedAt = placeholder.generationStartedAt
+  const stillMine = { _id: placeholder._id, generationStatus: 'pending', generationStartedAt: claimedAt }
   try {
     const generated = await generateRemediationQuestion(
       parentQuestion.question,
@@ -923,16 +931,20 @@ export async function ensureRemediationQuestion(roomId, parentQuestion, provider
       parentQuestion.explanation,
       provider
     )
-    placeholder.question = generated.question
-    placeholder.options = generated.options
-    placeholder.explanation = generated.explanation || ''
-    placeholder.generationStatus = 'ready'
-    await placeholder.save()
-    return placeholder.toObject()
+    const r = await Question.updateOne(stillMine, {
+      $set: {
+        question: generated.question,
+        options: generated.options,
+        explanation: generated.explanation || '',
+        generationStatus: 'ready'
+      }
+    })
+    // Our claim was taken over while we were slow — ride along with the newer attempt instead.
+    if (r.modifiedCount === 0) return waitForRemediationReady(placeholder._id)
+    return await Question.findById(placeholder._id).lean()
   } catch (err) {
     console.error('[remediation] Failed to generate for question:', parentQuestion._id, err.message)
-    placeholder.generationStatus = 'failed'
-    await placeholder.save().catch(() => {})
+    await Question.updateOne(stillMine, { $set: { generationStatus: 'failed' } }).catch(() => {})
     return null
   }
 }

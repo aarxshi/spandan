@@ -117,7 +117,8 @@ function RemediationPage() {
 
     const question = questions[currentIndex]
     const responseTime = Math.round((Date.now() - startTimeRef.current) / 1000)
-    const selectedIdx = timedOut ? 0 : optionIdx
+    // Time ran out with nothing chosen: send -1 (no option) so it is recorded as wrong, never as option A.
+    const selectedIdx = timedOut ? -1 : optionIdx
 
     let entry
     try {
@@ -131,7 +132,8 @@ function RemediationPage() {
           roomId,
           questionId: question._id,
           selectedOptions: [selectedIdx],
-          responseTime
+          responseTime,
+          timedOut
         })
       })
       const data = await res.json()
@@ -157,6 +159,9 @@ function RemediationPage() {
   }
 
   const goToResults = () => navigate(`/student/room/${roomId}/results`)
+  // A slow generation can trip a proxy timeout (504) while the server keeps going; retrying just
+  // picks up the finished question, so offer it instead of a dead end.
+  const retryLoad = () => { setError(''); fetchRemediationQuestions() }
 
   // Same page chrome as every other student page: sidebar + blue header + softly washed content area.
   const shell = (body, subtitle) => (
@@ -210,7 +215,10 @@ function RemediationPage() {
     return shell(
       <div style={{ ...cardStyle(isMobile), textAlign: 'center' }}>
         <p style={{ margin: '0 0 16px', color: tone('#dc2626'), fontSize: '15px' }}>{error}</p>
-        <button onClick={goToResults} style={primaryButton(false)}>Go to results</button>
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button onClick={retryLoad} style={primaryButton(false)}>Try again</button>
+          <button onClick={goToResults} style={{ ...primaryButton(false), background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-color)', boxShadow: 'none' }}>Go to results</button>
+        </div>
       </div>,
       'Something went wrong'
     )
