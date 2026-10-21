@@ -24,7 +24,7 @@ export async function computeRanked(roomId) {
   const roomObjId = new mongoose.Types.ObjectId(roomId)
 
   const ranked = await Response.aggregate([
-    { $match: { roomId: roomObjId } },
+    { $match: { roomId: roomObjId, isRemediation: { $ne: true } } },
     { $group: {
       _id: '$studentId',
       totalPoints: { $sum: '$points' },

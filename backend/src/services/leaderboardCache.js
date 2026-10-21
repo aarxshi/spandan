@@ -123,7 +123,7 @@ export async function computeRankedIncremental(roomId, { fold = true } = {}) {
     const { totals: base, done } = await readCache(id)
 
     // Authoritative universe of questions with answers (index DISTINCT_SCAN, not a full pass).
-    const allQids = await Response.distinct('questionId', { roomId: roomObjId })
+    const allQids = await Response.distinct('questionId', { roomId: roomObjId, isRemediation: { $ne: true } })
     const allSet = new Set(allQids.map(String))
 
     // Self-heal: `done` must be a subset of questions that still have answers. If a folded question's
@@ -137,7 +137,7 @@ export async function computeRankedIncremental(roomId, { fold = true } = {}) {
     const pending = allQids.filter((q) => !carriedDone.has(String(q)))
     if (pending.length) {
       const rows = await Response.aggregate([
-        { $match: { roomId: roomObjId, questionId: { $in: pending } } },
+        { $match: { roomId: roomObjId, questionId: { $in: pending }, isRemediation: { $ne: true } } },
         { $group: {
           _id: '$studentId',
           points: { $sum: '$points' },

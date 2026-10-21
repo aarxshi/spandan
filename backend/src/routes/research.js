@@ -89,7 +89,7 @@ router.get('/sessions', requireResearchKey, async (req, res) => {
       // Question columns in chronological order (Q1 = first asked). Every byStudent array holds the
       // same approved-question set in newest-first order, so take one and reverse — exactly as the CSV.
       const anySid = Object.keys(byStudent)[0]
-      const qCols = anySid ? [...byStudent[anySid]].reverse() : []
+      const qCols = anySid ? [...byStudent[anySid]].filter((q) => !q.isRemediation).reverse() : []
       const statsByQid = new Map((stats.questionStats || []).map((q) => [q.questionId, q]))
 
       const questions = qCols.map((qc, i) => {

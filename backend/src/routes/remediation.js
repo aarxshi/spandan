@@ -145,8 +145,9 @@ router.post('/submit', authorize('student'), async (req, res) => {
 
     const selectedOptionData = question.options[selectedOptions[0]]
     const isCorrect = selectedOptionData?.isCorrect || false
-    const maxPoints = question.points || 50
-    const points = isCorrect ? maxPoints : 0
+    // Follow-ups are practice: correctness is recorded and shown, but they are worth no points and
+    // are flagged so every score / rank / class statistic ignores them.
+    const points = 0
     const correctOption = question.options.findIndex(o => o.isCorrect)
 
     const response = new Response({
@@ -157,7 +158,8 @@ router.post('/submit', authorize('student'), async (req, res) => {
       selectedOptions,
       isCorrect,
       responseTime: responseTime || 0,
-      points
+      points,
+      isRemediation: true
     })
     await response.save()
 

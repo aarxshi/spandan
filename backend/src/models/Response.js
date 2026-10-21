@@ -36,6 +36,13 @@ const responseSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // True for follow-up (remediation) answers. These are practice: they never count toward points,
+  // rank, correct rate, answered counts or any class statistic. Queries that compute those use
+  // `isRemediation: { $ne: true }` so older responses (no field) still count as class answers.
+  isRemediation: {
+    type: Boolean,
+    default: false
+  },
   createdAt: {
     type: Date,
     default: Date.now

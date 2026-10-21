@@ -2,6 +2,12 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import useAuthStore from '../stores/authStore'
 import { API_URL } from '../config.js'
+import Sidebar from '../components/Sidebar'
+import { PageHeader, Pill, pageWash, primaryButton } from '../components/AppUI'
+import { StatTile, TileGrid, cardStyle } from '../components/InsightUI'
+import { Ico } from '../components/icons'
+import useIsMobile from '../hooks/useIsMobile'
+import { ChartColumn, Check, CircleCheck, RotateCcw, TriangleAlert, X } from 'lucide-react'
 
 // Decode HTML entities from LLM output
 const decodeHtml = (text) => {
@@ -10,32 +16,10 @@ const decodeHtml = (text) => {
   return doc.documentElement.textContent
 }
 
-const badgeStyle = {
-  display: 'inline-block',
-  padding: '3px 10px',
-  background: 'rgba(99, 102, 241, 0.15)',
-  border: '1px solid rgba(99, 102, 241, 0.4)',
-  borderRadius: '12px',
-  color: '#a5b4fc',
-  fontSize: '11px',
-  fontWeight: '700',
-  letterSpacing: '0.02em',
-  textTransform: 'uppercase'
-}
-
-const letterStyle = (background) => ({
-  width: '28px',
-  height: '28px',
-  borderRadius: '50%',
-  background,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: '12px',
-  fontWeight: '700',
-  flexShrink: 0,
-  color: 'white'
-})
+// Theme-aware colour helpers (same recipe as the rest of the app): a translucent tint of a colour for
+// backgrounds, and a tone lifted toward white in dark mode (--tone-lift) for text.
+const tint = (c, pct) => `color-mix(in srgb, ${c} ${pct}%, transparent)`
+const tone = (c) => `color-mix(in srgb, ${c}, white var(--tone-lift))`
 
 function RemediationPage() {
   const { roomId } = useParams()
@@ -43,6 +27,7 @@ function RemediationPage() {
   const [searchParams] = useSearchParams()
   const maxQuestions = parseInt(searchParams.get('max') ?? '2')
   const { user, token } = useAuthStore()
+  const isMobile = useIsMobile()
 
   const [questions, setQuestions] = useState([])
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -173,148 +158,145 @@ function RemediationPage() {
 
   const goToResults = () => navigate(`/student/room/${roomId}/results`)
 
-  if (isLoading) {
-    return (
+  // Same page chrome as every other student page: sidebar + blue header + softly washed content area.
+  const shell = (body, subtitle) => (
+    <div style={{
+      display: 'flex',
+      minHeight: '100vh',
+      maxWidth: '100%',
+      boxSizing: 'border-box',
+      background: 'var(--bg-primary)',
+      fontFamily: '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif'
+    }}>
+      <Sidebar user={user} />
       <div style={{
-        minHeight: '100vh',
-        background: 'var(--bg-primary)',
+        flex: 1,
+        minWidth: 0,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
         flexDirection: 'column',
-        gap: '16px'
+        marginLeft: 'var(--sidebar-width, 240px)',
+        maxWidth: '100%',
+        boxSizing: 'border-box'
       }}>
+        <PageHeader isMobile={isMobile} icon={RotateCcw} eyebrow="Follow-up practice" title="Let's revisit what you missed" subtitle={subtitle} />
+        <div style={{ flex: 1, background: pageWash, padding: isMobile ? '16px' : '32px', maxWidth: '100%', boxSizing: 'border-box' }}>
+          <div style={{ maxWidth: '860px', margin: '0 auto' }}>{body}</div>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (isLoading) {
+    return shell(
+      <div style={{ ...cardStyle(isMobile), textAlign: 'center', padding: isMobile ? '40px 18px' : '56px 24px' }}>
         <div style={{
           width: '48px', height: '48px',
           border: '4px solid var(--border-color)',
-          borderTopColor: '#f59e0b',
+          borderTopColor: 'var(--accent)',
           borderRadius: '50%',
-          animation: 'spin 1s linear infinite'
+          animation: 'spin 1s linear infinite',
+          margin: '0 auto 16px'
         }} />
-        <p style={{ color: 'var(--text-secondary)', fontSize: '16px' }}>
+        <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '15px' }}>
           Preparing your personalised questions...
         </p>
         <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
-      </div>
+      </div>,
+      'Hang tight while we prepare your questions'
     )
   }
 
   if (error) {
-    return (
-      <div style={{ minHeight: '100vh', background: 'var(--bg-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center' }}>
-          <p style={{ color: '#ef4444' }}>{error}</p>
-          <button onClick={() => navigate(`/student/room/${roomId}/results`)} style={{
-            marginTop: '16px', padding: '10px 24px', background: '#3b82f6',
-            color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer'
-          }}>
-            Go to Results
-          </button>
-        </div>
-      </div>
+    return shell(
+      <div style={{ ...cardStyle(isMobile), textAlign: 'center' }}>
+        <p style={{ margin: '0 0 16px', color: tone('#dc2626'), fontSize: '15px' }}>{error}</p>
+        <button onClick={goToResults} style={primaryButton(false)}>Go to results</button>
+      </div>,
+      'Something went wrong'
     )
   }
 
   const question = questions[currentIndex]
   const tta = question?.timeToAnswer || 30
-  const timerPct = (timeLeft / tta) * 100
-  const timerColor = timeLeft <= 5 ? '#ef4444' : timeLeft <= 10 ? '#f59e0b' : '#10b981'
   const isReview = phase === 'review'
-  const totalPoints = answers.reduce((sum, a) => sum + (a.points || 0), 0)
   const correctCount = answers.filter(a => a.isCorrect).length
 
-  return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)',
+  const failedNote = failedCount > 0 && (
+    <div role="note" style={{
+      background: 'var(--bg-card)',
+      border: `1px solid ${tint('#f59e0b', 45)}`,
+      borderLeft: '4px solid #f59e0b',
+      borderRadius: '12px',
+      padding: '12px 16px',
+      marginBottom: '16px',
       display: 'flex',
-      flexDirection: 'column',
       alignItems: 'center',
-      justifyContent: isReview ? 'flex-start' : 'center',
-      padding: '24px',
-      fontFamily: 'system-ui, sans-serif'
+      gap: '12px',
+      color: 'var(--text-primary)',
+      fontSize: '14px'
     }}>
-      {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-        <div style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '6px 16px',
-          background: 'rgba(245, 158, 11, 0.2)',
-          border: '1px solid rgba(245, 158, 11, 0.4)',
-          borderRadius: '20px',
-          marginBottom: '12px'
-        }}>
-          <span style={{ fontSize: '16px' }}>🔁</span>
-          <span style={{ color: '#fbbf24', fontSize: '13px', fontWeight: '600' }}>
-            {isReview ? 'Your follow-up answers' : `Let's revisit this — ${currentIndex + 1} of ${questions.length}`}
-          </span>
-        </div>
-        <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '13px', margin: 0 }}>
-          {isReview
-            ? `${correctCount} of ${questions.length} correct · +${totalPoints} pts`
-            : 'Answer all the questions — explanations come after the last one'}
-        </p>
-        {failedCount > 0 && (
-          <p style={{ color: 'rgba(251, 191, 36, 0.8)', fontSize: '12px', margin: '6px 0 0 0' }}>
-            {failedCount === 1
-              ? "We couldn't prepare one of your follow-up questions — you'll see fewer than expected."
-              : `We couldn't prepare ${failedCount} of your follow-up questions — you'll see fewer than expected.`}
-          </p>
-        )}
-      </div>
+      <span aria-hidden="true" style={{ display: 'inline-flex', color: '#f59e0b' }}><TriangleAlert size={18} /></span>
+      <span>
+        {failedCount === 1
+          ? "We couldn't prepare one of your follow-up questions — you'll see fewer than expected."
+          : `We couldn't prepare ${failedCount} of your follow-up questions — you'll see fewer than expected.`}
+      </span>
+    </div>
+  )
 
-      {/* Timer */}
-      {!isReview && (
-        <div style={{ width: '100%', maxWidth: '560px', marginBottom: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '12px' }}>Time remaining</span>
-            <span style={{ color: timerColor, fontWeight: '700', fontSize: '16px' }}>{timeLeft}s</span>
-          </div>
-          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px' }}>
+  // ---------- Answering: same look as the live question card on the student room page ----------
+  if (!isReview) {
+    return shell(
+      <>
+        {failedNote}
+        <div style={{
+          background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
+          borderRadius: 'var(--radius-lg)',
+          padding: isMobile ? '20px 16px' : '32px',
+          color: 'white',
+          boxShadow: '0 10px 40px rgba(124, 58, 237, 0.3)',
+          maxWidth: '100%',
+          boxSizing: 'border-box'
+        }}>
+          {/* Timer */}
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
             <div style={{
-              height: '100%',
-              width: `${timerPct}%`,
-              background: timerColor,
-              borderRadius: '4px',
-              transition: 'width 1s linear, background 0.3s'
-            }} />
+              width: '100px',
+              height: '100px',
+              borderRadius: '50%',
+              border: '4px solid rgba(255,255,255,0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 16px'
+            }}>
+              <span style={{ fontSize: '36px', fontWeight: '700', color: timeLeft <= 5 ? '#ffd700' : 'white' }}>{timeLeft}</span>
+            </div>
+            <p style={{ fontSize: '14px', opacity: 0.9, margin: 0 }}>seconds remaining</p>
           </div>
-        </div>
-      )}
 
-      {!isReview ? (
-        /* Answering phase: no correct/incorrect feedback until every question is answered */
-        <div style={{
-          width: '100%',
-          maxWidth: '560px',
-          background: 'rgba(255,255,255,0.05)',
-          backdropFilter: 'blur(10px)',
-          borderRadius: '20px',
-          padding: '28px',
-          border: '1px solid rgba(255,255,255,0.1)'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-            <span style={badgeStyle}>Follow-up question</span>
-            <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '12px' }}>
-              worth {question?.points ?? 50} pts
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+            <span style={{
+              padding: '4px 12px',
+              borderRadius: '999px',
+              background: 'rgba(255,255,255,0.18)',
+              border: '1px solid rgba(255,255,255,0.28)',
+              fontSize: '12px',
+              fontWeight: 700
+            }}>
+              Follow-up question {currentIndex + 1} of {questions.length}
             </span>
+            <span style={{ fontSize: '12px', opacity: 0.85 }}>practice · doesn't affect your score</span>
           </div>
 
-          <p style={{
-            color: 'white',
-            fontSize: '18px',
-            fontWeight: '600',
-            lineHeight: '1.5',
-            margin: '0 0 24px 0'
-          }}>
+          {/* Question */}
+          <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: '700', textAlign: 'center', margin: `0 0 ${isMobile ? '24px' : '32px'}`, wordBreak: 'break-word' }}>
             {decodeHtml(question?.question)}
-          </p>
+          </h2>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {/* Options */}
+          <div style={{ display: 'grid', gap: '12px', marginBottom: '24px' }}>
             {question?.options?.map((opt, idx) => {
-              const letter = String.fromCharCode(65 + idx)
               const isSelected = selectedOption === idx
               return (
                 <button
@@ -322,23 +304,38 @@ function RemediationPage() {
                   onClick={() => !isSubmitting && setSelectedOption(idx)}
                   disabled={isSubmitting}
                   style={{
+                    width: '100%',
+                    minHeight: '48px',
+                    boxSizing: 'border-box',
+                    padding: isMobile ? '14px 16px' : '20px 24px',
+                    background: isSelected ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.1)',
+                    border: `2px solid ${isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)'}`,
+                    borderRadius: '12px',
+                    color: 'white',
+                    fontSize: isMobile ? '16px' : '18px',
+                    textAlign: 'left',
+                    cursor: isSubmitting ? 'default' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '12px',
-                    padding: '14px 16px',
-                    background: isSelected ? 'rgba(99, 102, 241, 0.3)' : 'rgba(255,255,255,0.05)',
-                    border: isSelected ? '2px solid #6366f1' : '1px solid rgba(255,255,255,0.1)',
-                    borderRadius: '12px',
-                    color: 'rgba(255,255,255,0.9)',
-                    fontSize: '15px',
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s',
-                    width: '100%'
+                    gap: isMobile ? '12px' : '16px'
                   }}
                 >
-                  <span style={letterStyle('rgba(255,255,255,0.1)')}>{letter}</span>
-                  {decodeHtml(opt.text)}
+                  <span style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '50%',
+                    background: isSelected ? '#ffd700' : 'rgba(255,255,255,0.2)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: '700',
+                    color: isSelected ? '#1f2937' : 'white',
+                    fontSize: '16px',
+                    flexShrink: 0
+                  }}>
+                    {String.fromCharCode(65 + idx)}
+                  </span>
+                  <span style={{ minWidth: 0, wordBreak: 'break-word' }}>{decodeHtml(opt.text)}</span>
                 </button>
               )
             })}
@@ -348,141 +345,159 @@ function RemediationPage() {
             onClick={() => selectedOption !== null && handleSubmit(selectedOption)}
             disabled={selectedOption === null || isSubmitting}
             style={{
-              marginTop: '20px',
               width: '100%',
-              padding: '14px',
-              borderRadius: '12px',
+              padding: '16px',
+              background: selectedOption !== null ? '#ffd700' : 'rgba(255,255,255,0.2)',
+              color: selectedOption !== null ? '#1f2937' : 'rgba(255,255,255,0.5)',
               border: 'none',
-              background: selectedOption !== null ? 'linear-gradient(135deg, #6366f1, #4f46e5)' : 'rgba(255,255,255,0.1)',
-              color: selectedOption !== null ? 'white' : 'rgba(255,255,255,0.3)',
-              fontSize: '15px',
+              borderRadius: '12px',
+              fontSize: '16px',
               fontWeight: '600',
-              cursor: selectedOption !== null ? 'pointer' : 'not-allowed',
-              transition: 'all 0.2s'
+              cursor: selectedOption !== null && !isSubmitting ? 'pointer' : 'not-allowed'
             }}
           >
             {isSubmitting
               ? 'Submitting...'
               : currentIndex === questions.length - 1 ? 'Submit Final Answer' : 'Submit & Continue'}
           </button>
+          <p style={{ margin: '14px 0 0', textAlign: 'center', fontSize: '13px', opacity: 0.85 }}>
+            Answers and explanations appear after the last question.
+          </p>
         </div>
-      ) : (
-        /* Review phase: every question with the correct answer + explanation, on this same page */
-        <div style={{ width: '100%', maxWidth: '560px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {questions.map((q, qi) => {
-            const a = answers.find(x => x.questionIndex === qi)
-            const hasResult = a && !a.error
-            return (
-              <div key={q._id || qi} style={{
-                background: 'rgba(255,255,255,0.05)',
-                backdropFilter: 'blur(10px)',
-                borderRadius: '20px',
-                padding: '24px',
-                border: '1px solid rgba(255,255,255,0.1)'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                  <span style={badgeStyle}>Question {qi + 1}</span>
-                  {hasResult && (
-                    <span style={{ color: a.isCorrect ? '#6ee7b7' : '#fca5a5', fontSize: '12px', fontWeight: '600' }}>
-                      {a.isCorrect ? `✓ Correct +${a.points} pts` : '✗ Not quite'}
-                    </span>
-                  )}
-                </div>
+      </>,
+      `Question ${currentIndex + 1} of ${questions.length} · explanations come after the last one`
+    )
+  }
 
-                <p style={{ color: 'white', fontSize: '17px', fontWeight: '600', lineHeight: '1.5', margin: '0 0 16px 0' }}>
-                  {decodeHtml(q.question)}
-                </p>
+  // ---------- Review: every question with the correct answer + explanation, same page ----------
+  return shell(
+    <>
+      {failedNote}
+      <TileGrid isMobile={isMobile} cols={1}>
+        <StatTile
+          icon={CircleCheck}
+          label="Follow-up questions correct"
+          value={`${correctCount} / ${questions.length}`}
+          sub="practice only — these don't count toward your score or rank"
+          tint="#059669"
+          progress={questions.length ? (correctCount / questions.length) * 100 : undefined}
+        />
+      </TileGrid>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {q.options?.map((opt, idx) => {
-                    const letter = String.fromCharCode(65 + idx)
-                    const isSelected = a?.selectedIdx === idx
-                    const isCorrectOpt = hasResult && a.correctOption === idx
-                    const isWrongSelected = hasResult && isSelected && !a.isCorrect
+      {questions.map((q, qi) => {
+        const a = answers.find(x => x.questionIndex === qi)
+        const hasResult = a && !a.error
+        return (
+          <div key={q._id || qi} className="insight-card" style={cardStyle(isMobile)}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+              <Pill tone="var(--accent)">Follow-up Q{qi + 1}</Pill>
+              {hasResult && (
+                <Pill tone={a.isCorrect ? '#059669' : '#dc2626'}>
+                  {a.isCorrect ? <><Ico as={Check} /> Correct</> : <><Ico as={X} /> Not quite</>}
+                </Pill>
+              )}
+            </div>
 
-                    let bg = 'rgba(255,255,255,0.05)'
-                    let border = '1px solid rgba(255,255,255,0.1)'
-                    let color = 'rgba(255,255,255,0.9)'
-                    if (isCorrectOpt) {
-                      bg = 'rgba(16, 185, 129, 0.2)'; border = '2px solid #10b981'; color = '#6ee7b7'
-                    } else if (isWrongSelected) {
-                      bg = 'rgba(239, 68, 68, 0.2)'; border = '2px solid #ef4444'; color = '#fca5a5'
-                    } else if (isSelected) {
-                      bg = 'rgba(99, 102, 241, 0.3)'; border = '2px solid #6366f1'
-                    }
+            <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+              {decodeHtml(q.question)}
+            </p>
 
-                    return (
-                      <div key={idx} style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '12px',
-                        padding: '12px 14px',
-                        background: bg,
-                        border,
-                        borderRadius: '12px',
-                        color,
-                        fontSize: '14px'
-                      }}>
-                        <span style={letterStyle(isCorrectOpt ? '#10b981' : isWrongSelected ? '#ef4444' : 'rgba(255,255,255,0.1)')}>
-                          {isCorrectOpt ? '✓' : isWrongSelected ? '✗' : letter}
-                        </span>
-                        <span style={{ flex: 1 }}>{decodeHtml(opt.text)}</span>
-                        {isSelected && (
-                          <span style={{ fontSize: '11px', opacity: 0.7, flexShrink: 0 }}>
-                            {a?.timedOut ? 'time ran out' : 'your answer'}
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
+            <div style={{ display: 'grid', gap: '8px' }}>
+              {q.options?.map((opt, idx) => {
+                const isSelected = a?.selectedIdx === idx
+                const isCorrectOpt = hasResult && a.correctOption === idx
+                const isWrongSelected = hasResult && isSelected && !a.isCorrect
+                const accent = isCorrectOpt ? '#059669' : isWrongSelected ? '#dc2626' : null
 
-                {hasResult && a.explanation && (
-                  <div style={{
-                    marginTop: '14px',
-                    padding: '12px 14px',
-                    borderRadius: '12px',
-                    background: a.isCorrect ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                    border: `1px solid ${a.isCorrect ? '#10b981' : '#ef4444'}`
+                return (
+                  <div key={idx} style={{
+                    padding: '10px 14px',
+                    background: accent ? tint(accent, 12) : isSelected ? tint('var(--accent)', 12) : 'var(--bg-primary)',
+                    borderRadius: 'var(--radius-sm)',
+                    border: accent ? `2px solid ${accent}` : isSelected ? '2px solid var(--accent)' : '1px solid var(--border-color)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    minWidth: 0
                   }}>
-                    <p style={{ margin: '0 0 4px 0', color: 'rgba(255,255,255,0.9)', fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-                      Explanation
-                    </p>
-                    <p style={{ margin: 0, color: 'rgba(255,255,255,0.75)', fontSize: '13px', lineHeight: '1.5' }}>
-                      {decodeHtml(a.explanation)}
-                    </p>
+                    <span style={{
+                      width: '24px',
+                      height: '24px',
+                      borderRadius: '50%',
+                      background: accent || 'var(--border-color)',
+                      color: accent ? 'white' : 'var(--text-secondary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      flexShrink: 0
+                    }}>
+                      {String.fromCharCode(65 + idx)}
+                    </span>
+                    <span style={{
+                      fontSize: '14px',
+                      color: 'var(--text-primary)',
+                      fontWeight: isCorrectOpt ? 600 : 400,
+                      minWidth: 0,
+                      wordBreak: 'break-word'
+                    }}>
+                      {decodeHtml(opt.text)}
+                    </span>
+                    {isSelected && (
+                      <span style={{
+                        marginLeft: 'auto',
+                        color: isWrongSelected ? tone('#dc2626') : isCorrectOpt ? tone('#059669') : 'var(--accent)',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        flexShrink: 0,
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {a?.timedOut ? 'Time ran out' : 'Your answer'}
+                      </span>
+                    )}
+                    {isCorrectOpt && !isSelected && (
+                      <span style={{ marginLeft: 'auto', color: tone('#059669'), fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                        Correct answer
+                      </span>
+                    )}
                   </div>
-                )}
+                )
+              })}
+            </div>
 
-                {!hasResult && (
-                  <p style={{ margin: '14px 0 0 0', color: '#fca5a5', fontSize: '13px' }}>
-                    {a?.error || 'No answer was recorded for this question.'}
-                  </p>
-                )}
+            {hasResult && a.explanation && (
+              <div style={{
+                marginTop: '14px',
+                padding: '12px 14px',
+                borderRadius: '12px',
+                background: 'var(--bg-primary)',
+                border: '1px solid var(--border-color)',
+                borderLeft: '4px solid var(--accent)'
+              }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                  Explanation
+                </div>
+                <div style={{ fontSize: '14px', lineHeight: 1.5, color: 'var(--text-primary)' }}>
+                  {decodeHtml(a.explanation)}
+                </div>
               </div>
-            )
-          })}
+            )}
 
-          <button
-            onClick={goToResults}
-            style={{
-              width: '100%',
-              padding: '14px',
-              borderRadius: '12px',
-              border: 'none',
-              background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
-              color: 'white',
-              fontSize: '15px',
-              fontWeight: '600',
-              cursor: 'pointer',
-              marginBottom: '24px'
-            }}
-          >
-            📊 See Results
-          </button>
-        </div>
-      )}
-    </div>
+            {!hasResult && (
+              <p style={{ margin: '14px 0 0', color: tone('#dc2626'), fontSize: '13px' }}>
+                {a?.error || 'No answer was recorded for this question.'}
+              </p>
+            )}
+          </div>
+        )
+      })}
+
+      <button onClick={goToResults} style={primaryButton(false, { width: '100%', padding: '14px 20px', fontSize: '15px' })}>
+        <Ico as={ChartColumn} /> See results
+      </button>
+    </>,
+    `${correctCount} of ${questions.length} correct · practice only`
   )
 }
 

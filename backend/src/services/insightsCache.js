@@ -67,8 +67,8 @@ export async function loadInsightsDocs(roomId) {
   const User = (await import('../models/User.js')).default
   const [room, questions, responses, members, transcripts] = await Promise.all([
     Room.findById(roomId).lean(),
-    Question.find({ roomId }).lean(),
-    Response.find({ roomId }).select('questionId studentId selectedOption selectedOptions isCorrect responseTime points createdAt').lean(),
+    Question.find({ roomId, isRemediation: { $ne: true } }).lean(),
+    Response.find({ roomId, isRemediation: { $ne: true } }).select('questionId studentId selectedOption selectedOptions isCorrect responseTime points createdAt').lean(),
     RoomMember.find({ roomId }).select('studentId joinedAt').lean(),
     Transcript.find({ roomId }).select('segmentIndex wordCount duration').lean()
   ])

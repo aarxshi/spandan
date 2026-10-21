@@ -42,7 +42,7 @@ export const getRoomsByTeacher = async (teacherId, options = {}) => {
   // Get question counts for each room
   const roomIds = rooms.map(r => r._id)
   const questionCounts = await Question.aggregate([
-    { $match: { roomId: { $in: roomIds }, status: 'approved' } },
+    { $match: { roomId: { $in: roomIds }, status: 'approved', isRemediation: { $ne: true } } },
     { $group: { _id: '$roomId', count: { $sum: 1 } } }
   ])
   
@@ -158,7 +158,7 @@ export const getRoomsByStudent = async (studentId) => {
   const roomIds = allRooms.map(r => r._id)
   
   const questionCounts = await Question.aggregate([
-    { $match: { roomId: { $in: roomIds } } },
+    { $match: { roomId: { $in: roomIds }, isRemediation: { $ne: true } } },
     { $group: { _id: '$roomId', count: { $sum: 1 } } }
   ])
   
@@ -209,7 +209,7 @@ export const getActiveRoomsByStudent = async (studentId) => {
   }
   
   const questionCounts = await Question.aggregate([
-    { $match: { roomId: { $in: roomIds }, status: 'approved' } },
+    { $match: { roomId: { $in: roomIds }, status: 'approved', isRemediation: { $ne: true } } },
     { $group: { _id: '$roomId', count: { $sum: 1 } } }
   ])
   
