@@ -18,10 +18,6 @@ router.post('/generate', authorize('student'), async (req, res) => {
     const RoomMember = (await import('../models/RoomMember.js')).default
 
     const { roomId, maxQuestions: rawMaxQuestions = 2 } = req.body
-    // Clamp server-side — maxQuestions comes straight from the client, and the teacher-facing
-    // setting only ever offers 0-5, so don't trust a request asking for more (each one is an LLM
-    // call in the worst case).
-    const maxQuestions = Math.max(0, Math.min(5, Number(rawMaxQuestions) || 0))
     const studentId = req.user._id
 
     if (!roomId) return res.status(400).json({ error: 'roomId is required' })
@@ -34,6 +30,16 @@ router.post('/generate', authorize('student'), async (req, res) => {
     const room = await Room.findById(roomId).lean()
     if (!room) return res.status(404).json({ error: 'Room not found' })
     const provider = room.settings?.questionProvider || 'minimax'
+
+    // The room's own setting is the authority, not the client: maxQuestions comes straight from the
+    // browser (and a student's copy of the room can be stale if the teacher changed the setting after
+    // they joined). Take the smaller of the two and clamp to the 0-5 the settings dialog offers (each
+    // question is an LLM call in the worst case). 0 = follow-ups are off for this room.
+    const roomMax = Number.isFinite(room.settings?.maxFollowUpQuestions) ? room.settings.maxFollowUpQuestions : 2
+    const maxQuestions = Math.max(0, Math.min(5, roomMax, Number(rawMaxQuestions) || 0))
+    if (maxQuestions === 0) {
+      return res.json({ success: true, questions: [], failedCount: 0, message: 'Follow-up questions are turned off for this room' })
+    }
 
     // Step 1: get this student's wrong answers
     // Class questions only: a wrong follow-up answer is also isCorrect:false, and without this filter a

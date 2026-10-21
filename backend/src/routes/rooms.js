@@ -146,7 +146,12 @@ router.put('/:id', authenticate, authorize('teacher'), requireApprovedTeacher, v
     // If room is being ended, emit socket event to notify all participants
     if (req.body.isActive === false && updatedRoom.endedAt) {
       const io = req.app.get('io')
-      io.to(room.code).emit('room:ended', { roomId: room._id, endedAt: updatedRoom.endedAt })
+      io.to(room.code).emit('room:ended', {
+        roomId: room._id,
+        endedAt: updatedRoom.endedAt,
+        // Current follow-up limit, so students don't act on a stale copy of the room's settings.
+        maxFollowUpQuestions: updatedRoom.settings?.maxFollowUpQuestions ?? 2
+      })
       // Force a final leaderboard recompute+broadcast so the settled board is complete — the live
       // board is otherwise deferred to the quiet-debounce window and may not have fired yet.
       req.app.get('liveUpdates')?.refreshLeaderboardNow(room._id)

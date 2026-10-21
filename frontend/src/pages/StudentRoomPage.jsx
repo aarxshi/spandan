@@ -215,13 +215,19 @@ function StudentRoomPage() {
     socket.on('video:resume', handleVideoResume)
     socket.on('questions:ready', handleQuestionsReady)
     socket.on('connect', handleReconnect)
-    socket.on('room:ended', () => {
+    socket.on('room:ended', (data) => {
       // Show the interstitial immediately, then navigate to remediation (which redirects to results
       // if no wrong answers). Stagger across jitter window to avoid thundering herd on the API.
       setSessionEnded(true)
       const delay = Math.random() * RESULTS_NAV_JITTER_MS
+      // Follow-ups off (0) → straight to results; otherwise the follow-up page (which itself falls
+      // back to results when the student has nothing to practise).
+      // Prefer the value sent with the event (current); the copy of the room saved at join time can be stale.
+      const maxFollowUps = data?.maxFollowUpQuestions ?? room?.settings?.maxFollowUpQuestions ?? 2
       resultsNavTimerRef.current = setTimeout(() => {
-        navigate(`/student/room/${room?._id}/remediation?max=${room?.settings?.maxFollowUpQuestions ?? 2}`)
+        navigate(maxFollowUps > 0
+          ? `/student/room/${room?._id}/remediation?max=${maxFollowUps}`
+          : `/student/room/${room?._id}/results`)
       }, delay)
     })
 

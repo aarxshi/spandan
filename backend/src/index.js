@@ -525,6 +525,10 @@ async function setLiveQuestion(roomId, questionId) {
 const PRE_GEN_DELAY_MS = Number(process.env.REMEDIATION_PRE_GEN_DELAY_MS) || 4000
 
 async function preGenerateRemediation(room, questionId) {
+  // Teacher turned follow-ups off for this room (0) — don't spend LLM calls generating them.
+  const maxFollowUps = room.settings?.maxFollowUpQuestions ?? 2
+  if (maxFollowUps <= 0) return
+
   await new Promise(r => setTimeout(r, PRE_GEN_DELAY_MS))
   try {
     const Question = (await import('./models/Question.js')).default
