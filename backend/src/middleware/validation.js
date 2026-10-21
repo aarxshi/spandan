@@ -66,7 +66,8 @@ export const roomSettingsSchema = z.object({
   }).optional(),
   anonymousLeaderboard: z.boolean().optional(),
   anonymityPercent: z.number().int().min(0).max(100).optional(),   // dialog 0-100
-  revealBottomToStudents: z.boolean().optional()
+  revealBottomToStudents: z.boolean().optional(),
+  maxFollowUpQuestions: z.number().int().min(0).max(5).optional()  // dialog 0-5 (0 = off)
 })
 
 // Body of PUT /rooms/:id. The same route saves settings ({ settings }), edits the video link

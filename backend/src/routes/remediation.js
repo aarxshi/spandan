@@ -36,7 +36,10 @@ router.post('/generate', authorize('student'), async (req, res) => {
     const provider = room.settings?.questionProvider || 'minimax'
 
     // Step 1: get this student's wrong answers
-    const wrongResponses = await Response.find({ roomId, studentId, isCorrect: false }).lean()
+    // Class questions only: a wrong follow-up answer is also isCorrect:false, and without this filter a
+    // second visit to this endpoint would treat it as a "missed question" and generate a follow-up
+    // to a follow-up.
+    const wrongResponses = await Response.find({ roomId, studentId, isCorrect: false, isRemediation: { $ne: true } }).lean()
     if (wrongResponses.length === 0) {
       return res.json({ success: true, questions: [], message: 'No wrong answers — no remediation needed' })
     }

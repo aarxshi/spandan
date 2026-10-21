@@ -56,7 +56,10 @@ const roomSchema = new mongoose.Schema({
     // Only meaningful while anonymousLeaderboard is ON. When the teacher turns this ON, students ALSO
     // see the real names of the bottom anonymityPercent% (the same lowest-scorer slice the teacher
     // sees) appended to their masked top-N board. OFF (default) = students see only the masked top-N.
-    revealBottomToStudents: { type: Boolean, default: false }
+    revealBottomToStudents: { type: Boolean, default: false },
+    // Follow-up (remediation) questions each student gets after the room ends (0 = off). Must be
+    // declared here, otherwise Mongoose's strict mode silently drops it when the teacher saves settings.
+    maxFollowUpQuestions: { type: Number, default: 2, min: 0, max: 5 }
   }
 }, {
   timestamps: true
