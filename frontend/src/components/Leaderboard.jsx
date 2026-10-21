@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { API_URL } from '../config.js'
+import { Medal } from 'lucide-react'
 
 const Leaderboard = ({ roomId, token, socket, userId }) => {
   const [leaderboard, setLeaderboard] = useState([])
@@ -189,7 +190,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
                      isCurrentUser ? 'linear-gradient(135deg, #dbeafe, #bfdbfe)' : 'var(--bg-primary)',
         borderRadius: '10px',
         border: entry.rank <= 3 ? `2px solid ${entry.rank === 1 ? '#f59e0b' : entry.rank === 2 ? '#9ca3af' : '#d97706'}` :
-               isCurrentUser ? '2px solid #3b82f6' : '1px solid var(--border-color)'
+               isCurrentUser ? '2px solid var(--accent)' : '1px solid var(--border-color)'
       }}>
         <span style={{
           width: '28px',
@@ -204,7 +205,7 @@ const Leaderboard = ({ roomId, token, socket, userId }) => {
           fontWeight: '700',
           flexShrink: 0
         }}>
-          {entry.rank <= 3 ? ['🥇', '🥈', '🥉'][entry.rank - 1] : rank}
+          {entry.rank <= 3 ? <Medal size={15} strokeWidth={2.25} aria-label={`Rank ${entry.rank}`} /> : rank}
         </span>
 
         <div style={{ flex: '1 1 auto', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>

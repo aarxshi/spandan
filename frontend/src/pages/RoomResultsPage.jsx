@@ -4,11 +4,21 @@ import useAuthStore from '../stores/authStore'
 import useRoomStore from '../stores/roomStore'
 import useSocketStore from '../stores/socketStore'
 import Sidebar from '../components/Sidebar'
-import ThemeToggle from '../components/ThemeToggle'
-import ProfileDropdown from '../components/ProfileDropdown'
+import { PageHeader, Pill } from '../components/AppUI'
+import { SectionHeader, cardStyle } from '../components/InsightUI'
 import { API_URL } from '../config.js'
 import { fetchAllRoomQuestions } from '../services/questionService'
 import useIsMobile from '../hooks/useIsMobile'
+import RoomInsights from '../components/RoomInsights'
+import StudentInsights from '../components/StudentInsights'
+import { downloadText, safeFilename } from '../lib/questionsExport'
+import { ArrowLeft, Award, ChartColumn, Check, CircleCheck, FileText, Inbox, RotateCcw, Target, TriangleAlert, Users, X } from 'lucide-react'
+import { Ico, renderIcon } from '../components/icons'
+
+// Theme-aware colour helpers (same recipe as InsightUI/AppUI): a translucent tint for backgrounds, and a
+// tone lifted toward white in dark mode for text.
+const tintBg = (c, pct) => `color-mix(in srgb, ${c} ${pct}%, transparent)`
+const toneInk = (c) => `color-mix(in srgb, ${c}, white var(--tone-lift))`
 
 function RoomResultsPage() {
   const { roomId } = useParams()
@@ -22,6 +32,8 @@ function RoomResultsPage() {
   const [questions, setQuestions] = useState([])
   const [responses, setResponses] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const [insights, setInsights] = useState(null)   // GET /responses/insights/:roomId (teacher: full, student: own results vs class)
+  const [insightsFailed, setInsightsFailed] = useState(false) // → show the plain summary cards + question list instead
   const [stats, setStats] = useState({
     totalResponses: 0,
     totalCorrect: 0,
@@ -68,6 +80,15 @@ function RoomResultsPage() {
       if (roomRes.ok) {
         setRoom(roomData.room || roomData)
       }
+
+      // Session insights (one aggregated payload). Non-fatal: if it fails, the page falls back to the
+      // plain summary cards and question list.
+      setInsights(null)
+      setInsightsFailed(false)
+      fetch(`${API_URL}/responses/insights/${roomId}`, { headers: { 'Authorization': `Bearer ${token}` } })
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (d?.success) setInsights(d); else setInsightsFailed(true) })
+        .catch(() => setInsightsFailed(true))
 
       if (user?.role === 'student') {
         // Student: fetch their own responses (includes questions with answers)
@@ -150,7 +171,7 @@ function RoomResultsPage() {
 
         // Calculate overall stats from aggregated data
         const totalResponses = rData.stats?.totalResponses || 0
-        const totalCorrect = questionStats.reduce((sum, q) => sum + (q.correctCount || 0), 0)
+        const totalCorrect = questionStats.filter(q => !q.isRemediation).reduce((sum, q) => sum + (q.correctCount || 0), 0)
         const averageScore = totalResponses > 0 ? Math.round((totalCorrect / totalResponses) * 100) : 0
         const uniqueStudents = rData.stats?.totalStudents || 0
         const participationRate = roomQuestions.length > 0
@@ -172,6 +193,14 @@ function RoomResultsPage() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const exportResponsesCsv = async () => {
+    try {
+      const res = await fetch(`${API_URL}/responses/room/${roomId}/export`, { headers: { 'Authorization': `Bearer ${token}` } })
+      if (!res.ok) throw new Error('Export failed')
+      downloadText(safeFilename(`${room?.name || 'room'}_${room?.code || ''}_responses`) + '.csv', await res.text(), 'text/csv')
+    } catch (e) { window.alert('Could not download the responses CSV. Please try again.') }
   }
 
   if (isLoading) {
@@ -202,24 +231,21 @@ function RoomResultsPage() {
       </div>
     )
   }
-
   // Remediation questions are personalized, generated after the fact, and worth different points
-  // than the quiz itself — mixing them into the main numbered list (and the "Total Questions"
-  // count) makes the session look bigger/different than what the teacher actually built, and on
-  // the teacher side they'd sort ahead of the real questions (newest-first). Split them into their
-  // own reviewable section instead.
+  // than the quiz itself — split them into their own reviewable section instead of the main list.
   const mainQuestions = questions.filter(q => !q.isRemediation)
   const remediationQuestions = questions.filter(q => q.isRemediation)
 
-  // Stat cards config — same data, presented uniformly. Role-specific 3rd card handled inline.
+  // Fallback summary cards — only shown if the insights call failed. Normally each role's single tile
+  // row lives in RoomInsights / StudentInsights (one source of numbers, no duplicates).
   const statCards = [
-    { icon: '📝', value: mainQuestions.length, label: 'Total Questions', tint: 'var(--accent)' },
-    { icon: '👥', value: stats.totalResponses, label: 'Total Responses', tint: 'var(--accent)' },
+    { icon: FileText, value: mainQuestions.length, label: 'Total Questions', tint: 'var(--accent)' },
+    { icon: Users, value: stats.totalResponses, label: 'Total Responses', tint: 'var(--accent)' },
     ...(user?.role === 'teacher'
-      ? [{ icon: '🧑‍🎓', value: stats.totalStudents || 0, label: 'Total Students', tint: 'var(--accent)' }]
-      : [{ icon: '🏅', value: stats.userRank ? `#${stats.userRank}` : '—', label: 'Your Rank', tint: '#f59e0b', valueColor: '#f59e0b' }]),
-    { icon: '✅', value: `${stats.averageScore}%`, label: 'Average Score', tint: '#059669', valueColor: '#059669' },
-    { icon: '🎯', value: stats.totalCorrect, label: 'Correct Answers', tint: 'var(--accent)', valueColor: 'var(--accent)' },
+      ? [{ icon: Users, value: stats.totalStudents || 0, label: 'Total Students', tint: 'var(--accent)' }]
+      : [{ icon: Award, value: stats.userRank ? `#${stats.userRank}` : '—', label: 'Your Rank', tint: '#f59e0b', valueColor: '#f59e0b' }]),
+    { icon: CircleCheck, value: `${stats.averageScore}%`, label: 'Average Score', tint: '#059669', valueColor: '#059669' },
+    { icon: Target, value: stats.totalCorrect, label: 'Correct Answers', tint: 'var(--accent)', valueColor: 'var(--accent)' },
   ]
 
   return (
@@ -242,44 +268,13 @@ function RoomResultsPage() {
         maxWidth: '100%',
         boxSizing: 'border-box'
       }}>
-        {/* Header */}
-        <header style={{
-          background: 'var(--header-bg)',
-          color: 'white',
-          padding: isMobile ? '20px 16px' : '24px 32px',
-          paddingLeft: isMobile ? '64px' : '32px',
-          boxSizing: 'border-box'
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{
-                margin: 0,
-                fontSize: isMobile ? '22px' : '26px',
-                fontWeight: 700,
-                letterSpacing: '-0.02em',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px'
-              }}>
-                <span aria-hidden="true">📊</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {room?.name || 'Room'} Results
-                </span>
-              </h1>
-              <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '14px' }}>
-                Code: {room?.code} • Completed
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <ThemeToggle />
-              <ProfileDropdown />
-            </div>
-          </div>
-        </header>
+        <PageHeader isMobile={isMobile} icon={ChartColumn} eyebrow="Session results" title={room?.name || 'Room'}
+          subtitle={<>Code <strong style={{ letterSpacing: '0.1em' }}>{room?.code}</strong> · Completed{room?.endedAt ? ` · ${new Date(room.endedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}</>} />
 
-        {/* Content */}
+        {/* Content (faint accent wash behind the results) */}
         <div style={{
           flex: 1,
+          background: 'radial-gradient(900px 360px at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%), radial-gradient(700px 300px at 100% 0%, color-mix(in srgb, #8b5cf6 6%, transparent), transparent 70%)',
           padding: isMobile ? '16px' : '32px',
           maxWidth: '100%',
           boxSizing: 'border-box'
@@ -295,7 +290,7 @@ function RoomResultsPage() {
               background: 'var(--bg-card)',
               color: 'var(--text-secondary)',
               border: '1px solid var(--border-color)',
-              borderRadius: 'var(--radius-sm)',
+              borderRadius: '12px',
               fontSize: '14px',
               fontWeight: 600,
               cursor: 'pointer',
@@ -303,11 +298,12 @@ function RoomResultsPage() {
               marginBottom: '24px'
             }}
           >
-            ← Back
+            <Ico as={ArrowLeft} /> Back
           </button>
 
-          {/* Overview Stats */}
-          <div style={{
+          {/* Fallback overview stats (insights unavailable) */}
+          {insightsFailed && (
+          <div data-tour="results-stats" style={{
             display: 'grid',
             gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(160px, 1fr))',
             gap: '16px',
@@ -334,9 +330,10 @@ function RoomResultsPage() {
                   justifyContent: 'center',
                   fontSize: '20px',
                   background: 'color-mix(in srgb, ' + card.tint + ' 14%, transparent)',
-                  border: '1px solid color-mix(in srgb, ' + card.tint + ' 22%, transparent)'
+                  border: '1px solid color-mix(in srgb, ' + card.tint + ' 22%, transparent)',
+                  color: 'color-mix(in srgb, ' + card.tint + ', white var(--tone-lift))'
                 }} aria-hidden="true">
-                  {card.icon}
+                  {renderIcon(card.icon, 20)}
                 </div>
                 <div style={{
                   fontSize: isMobile ? '26px' : '30px',
@@ -353,9 +350,21 @@ function RoomResultsPage() {
               </div>
             ))}
           </div>
+          )}
 
-          {/* Questions Analysis */}
-          <div style={{
+          {/* Session insights — teachers get the class analytics (and the collapsible item analysis replaces the
+              old question list below); students get THEIR OWN results against the class, then their answer list. */}
+          {insights && user?.role === 'teacher' && (
+            <RoomInsights insights={insights} isTeacher isMobile={isMobile} onExportResponses={exportResponsesCsv} />
+          )}
+          {insights && user?.role !== 'teacher' && (
+            <StudentInsights insights={insights} isMobile={isMobile} />
+          )}
+
+          {/* Fallback question list — only if the insights call failed; both roles otherwise get the
+              collapsible question-wise analysis above (teacher: item analysis, student: own results). */}
+          {insightsFailed && (
+          <div data-tour="question-analysis" style={{
             background: 'var(--bg-card)',
             border: '1px solid var(--border-color)',
             borderRadius: 'var(--radius-lg)',
@@ -376,7 +385,7 @@ function RoomResultsPage() {
 
             {mainQuestions.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-secondary)' }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>📭</div>
+                <div style={{ fontSize: '48px', marginBottom: '16px', color: 'var(--text-secondary)' }}><Inbox size={48} strokeWidth={1.5} aria-hidden="true" /></div>
                 <p style={{ margin: 0 }}>No questions were asked in this room.</p>
               </div>
             ) : (
@@ -416,7 +425,7 @@ function RoomResultsPage() {
                               width: '28px',
                               height: '28px',
                               borderRadius: '50%',
-                              background: 'var(--accent)',
+                              background: 'var(--accent-solid)',
                               color: 'white',
                               display: 'flex',
                               alignItems: 'center',
@@ -456,7 +465,7 @@ function RoomResultsPage() {
                                 background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
                                 color: q.isCorrect ? '#059669' : '#dc2626'
                               }}>
-                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                                {q.isCorrect ? <><Ico as={Check} /> Correct</> : <><Ico as={X} /> Incorrect</>}
                               </span>
                             )}
                           </div>
@@ -514,7 +523,7 @@ function RoomResultsPage() {
                                     {opt.text}
                                   </span>
                                   {isTeacher && isCorrect && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0, display: 'inline-flex' }}><Check size={16} strokeWidth={2.75} aria-label="Correct" /></span>
                                   )}
                                   {!isTeacher && isSelected && (
                                     <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
@@ -597,38 +606,22 @@ function RoomResultsPage() {
               </div>
             )}
           </div>
+          )}
 
-          {/* Remediation Questions — shown separately from the main quiz: personalized per student,
-              generated after the session, and worth different points, so mixing them into the
-              numbered list above would misrepresent the quiz the teacher built. */}
+          {/* Follow-up (remediation) questions — shown separately from the main quiz: personalized per
+              student, generated after the session, and worth different points, so mixing them into the
+              numbered list would misrepresent the quiz the teacher built. Same card language as the
+              rest of the results page (InsightUI cards, pills, theme tokens). */}
           {remediationQuestions.length > 0 && (
-            <div style={{
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              borderRadius: 'var(--radius-lg)',
-              boxShadow: 'var(--shadow-md)',
-              padding: isMobile ? '18px' : '24px',
-              maxWidth: '100%',
-              boxSizing: 'border-box',
-              marginTop: '24px'
-            }}>
-              <h2 style={{
-                margin: '0 0 6px',
-                fontSize: '18px',
-                fontWeight: 700,
-                letterSpacing: '-0.01em',
-                color: 'var(--text-primary)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}>
-                <span aria-hidden="true">🎯</span> Follow-up Questions
-              </h2>
-              <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                {user?.role === 'teacher'
-                  ? 'Personalized follow-up questions generated for students who missed one of the quiz questions above.'
-                  : 'Extra practice questions generated for you based on what you missed above.'}
-              </p>
+            <div className="insight-card" style={{ ...cardStyle(isMobile), marginTop: '24px' }}>
+              <SectionHeader
+                icon={RotateCcw}
+                tint="#8b5cf6"
+                title="Follow-up questions"
+                hint={user?.role === 'teacher'
+                  ? 'Practice questions generated for students who missed one of the quiz questions above. They don\'t count toward points, rank or class statistics.'
+                  : 'Extra practice questions based on what you missed above. They don\'t count toward your points or rank.'}
+              />
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {remediationQuestions.map((q, index) => {
@@ -660,30 +653,14 @@ function RoomResultsPage() {
                       }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                            <span style={{
-                              padding: '3px 8px',
-                              background: 'color-mix(in srgb, #8b5cf6 16%, transparent)',
-                              color: '#7c3aed',
-                              borderRadius: '6px',
-                              fontSize: '11px',
-                              fontWeight: 700
-                            }}>
-                              Follow-up · worth {q.maxPoints || q.points || 50} pts
-                            </span>
+                            <Pill tone="#8b5cf6">Follow-up Q{index + 1} · practice</Pill>
                             {!isTeacher && q.answered && (
-                              <span style={{
-                                padding: '3px 8px',
-                                borderRadius: '6px',
-                                fontSize: '11px',
-                                fontWeight: 600,
-                                background: q.isCorrect ? 'color-mix(in srgb, #059669 16%, transparent)' : 'color-mix(in srgb, #dc2626 16%, transparent)',
-                                color: q.isCorrect ? '#059669' : '#dc2626'
-                              }}>
-                                {q.isCorrect ? '✓ Correct' : '✗ Incorrect'}
-                              </span>
+                              <Pill tone={q.isCorrect ? '#059669' : '#dc2626'}>
+                                {q.isCorrect ? <><Ico as={Check} /> Correct</> : <><Ico as={X} /> Incorrect</>}
+                              </Pill>
                             )}
                           </div>
-                          <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.5 }}>
+                          <p style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 14px', lineHeight: 1.45 }}>
                             {q.question}
                           </p>
 
@@ -696,7 +673,7 @@ function RoomResultsPage() {
                               const isSelected = q.selectedOption === optIdx
                               const showAsSelected = isTeacher ? isCorrect : isSelected
                               const highlightStyle = showAsSelected
-                                ? (isTeacher ? 'color-mix(in srgb, #059669 12%, transparent)' : (isSelected ? (isCorrect ? 'color-mix(in srgb, #059669 12%, transparent)' : 'color-mix(in srgb, #dc2626 12%, transparent)') : 'color-mix(in srgb, #059669 12%, transparent)'))
+                                ? (isTeacher ? tintBg('#059669', 12) : (isSelected ? (isCorrect ? tintBg('#059669', 12) : tintBg('#dc2626', 12)) : tintBg('#059669', 12)))
                                 : 'var(--bg-card)'
                               const borderStyle = showAsSelected
                                 ? (isTeacher ? '2px solid #059669' : (isSelected ? '2px solid var(--accent)' : '2px solid #059669'))
@@ -737,13 +714,13 @@ function RoomResultsPage() {
                                     {opt.text}
                                   </span>
                                   {isTeacher && isCorrect && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '14px', flexShrink: 0 }}>✓</span>
+                                    <span style={{ marginLeft: 'auto', color: toneInk('#059669'), fontSize: '14px', flexShrink: 0, display: 'inline-flex' }}><Check size={16} strokeWidth={2.75} aria-label="Correct" /></span>
                                   )}
                                   {!isTeacher && isSelected && (
                                     <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Your answer</span>
                                   )}
                                   {!isTeacher && isCorrect && !isSelected && (
-                                    <span style={{ marginLeft: 'auto', color: '#059669', fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
+                                    <span style={{ marginLeft: 'auto', color: toneInk('#059669'), fontSize: '13px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>Correct answer</span>
                                   )}
                                 </div>
                               )
@@ -753,14 +730,18 @@ function RoomResultsPage() {
                           {!isTeacher && !q.answered && (
                             <div style={{
                               marginTop: '12px',
-                              padding: '12px',
-                              background: 'rgba(245,158,11,0.1)',
-                              borderRadius: '8px',
-                              color: '#d97706',
+                              padding: '10px 14px',
+                              background: tintBg('#f59e0b', 12),
+                              border: `1px solid ${tintBg('#f59e0b', 30)}`,
+                              borderRadius: 'var(--radius-sm)',
+                              color: toneInk('#b45309'),
                               fontSize: '13px',
-                              fontWeight: '600'
+                              fontWeight: 600,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px'
                             }}>
-                              ⚠️ You didn't complete this follow-up question
+                              <TriangleAlert size={16} aria-hidden="true" /> You didn't complete this follow-up question
                             </div>
                           )}
                         </div>
@@ -770,14 +751,14 @@ function RoomResultsPage() {
                           width: isMobile ? '100%' : 'auto',
                           textAlign: 'center',
                           padding: '16px',
-                          background: 'color-mix(in srgb, ' + scoreColor + ' 12%, transparent)',
-                          border: '1px solid color-mix(in srgb, ' + scoreColor + ' 24%, transparent)',
+                          background: tintBg(scoreColor, 12),
+                          border: `1px solid ${tintBg(scoreColor, 24)}`,
                           borderRadius: 'var(--radius)',
                           flexShrink: 0
                         }}>
                           {isTeacher ? (
                             <>
-                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
+                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: toneInk(scoreColor) }}>
                                 {correctRate !== null ? `${correctRate}%` : '—'}
                               </div>
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
@@ -786,11 +767,11 @@ function RoomResultsPage() {
                             </>
                           ) : (
                             <>
-                              <div style={{ fontSize: isMobile ? '28px' : '32px', fontWeight: 700, letterSpacing: '-0.02em', color: scoreColor }}>
-                                {q.answered ? (q.pointsEarned || 0) : '—'}
+                              <div style={{ fontSize: isMobile ? '22px' : '24px', fontWeight: 700, letterSpacing: '-0.02em', color: toneInk(scoreColor) }}>
+                                {q.answered ? (q.isCorrect ? 'Correct' : 'Missed') : '—'}
                               </div>
                               <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px', fontWeight: 500 }}>
-                                / {q.maxPoints || 50} pts
+                                practice
                               </div>
                             </>
                           )}
