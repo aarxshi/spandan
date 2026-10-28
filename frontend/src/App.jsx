@@ -21,6 +21,8 @@ import ProfilePage from './pages/ProfilePage'
 import HelpModal from './components/HelpModal'
 import Tour from './components/Tour'
 import AdminPage from './pages/AdminPage'
+import TermsPage from './pages/TermsPage'
+import TermsGate from './components/TermsGate'
 import { isTokenExpired } from './lib/jwt.js'
 
 function App() {
@@ -70,10 +72,13 @@ function App() {
       {/* Mounted once for every page: the ⓘ help popup and the guided tour overlay (auto-starts per page). */}
       <HelpModal />
       <Tour />
+      {/* Blocking accept-terms screen for signed-in accounts that have not accepted the current terms. */}
+      <TermsGate />
       <Routes>
         <Route path="/" element={<AuthPage />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/terms" element={<TermsPage />} />
         <Route path="/teacher" element={
           <ProtectedRoute allowedRoles={['teacher']}>
             <DashboardPage />
